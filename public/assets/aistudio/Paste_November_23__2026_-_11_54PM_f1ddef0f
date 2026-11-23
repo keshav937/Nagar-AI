@@ -1,0 +1,1186 @@
+# MASTER BUILD PROMPT — NAGAR AI
+## The Intelligent City Operating System
+### A unified AI-powered Smart City Management Platform
+
+Act as a world-class product architect, senior full-stack developer, AI engineer, UI/UX designer, geospatial systems engineer and database architect.
+
+Build a complete, production-quality, fully functional, responsive web application named **NAGAR AI — The Intelligent City Operating System**.
+
+Tagline: "A Smarter City. A Better Tomorrow."
+
+This is an integrated smart-city platform addressing all three challenge areas under Track 5: Smarter Cities & Civic Infrastructure:
+
+1. Real-Time Civic Issue Reporting & Resolution Tracking.
+2. Optimizing Informal Public Transit Routing.
+3. Urban Waste Segregation & Collection Routing.
+
+The application must be a real working product, not a UI mockup, static dashboard, prototype with fake buttons or a collection of disconnected pages.
+
+Every feature must be connected to its corresponding frontend, backend, database and required service.
+
+IMPORTANT DEVELOPMENT RULE:
+Do not sacrifice functionality for appearance. Do not create buttons that do nothing, artificial AI responses, fabricated live location information, hardcoded success messages or fake real-time tracking.
+
+If an external integration requires credentials, build the complete integration architecture, clearly show its connection status and provide a working demo mode using realistic sample data. Never pretend that an unavailable external service is live.
+
+---
+
+# 1. PRODUCT VISION AND DESIGN IDENTITY
+
+Create an elegant, intelligent and citizen-friendly city management ecosystem.
+
+The website should feel like a premium modern technology product, combining the simplicity of Apple-level user experience with the capabilities of an advanced smart-city platform.
+
+Design requirements:
+
+- Minimal, elegant and modern interface.
+- Clean white and soft neutral backgrounds.
+- Deep forest green or emerald as the primary accent.
+- Charcoal typography.
+- Subtle shadows and borders.
+- Beautiful cards with consistent spacing.
+- Rounded but professional components.
+- High-quality typography.
+- Smooth transitions and micro-interactions.
+- Carefully designed icons.
+- Attractive data visualizations.
+- Beautiful interactive maps.
+- Responsive layouts for mobile, tablet and desktop.
+- Large, accessible controls.
+- Clear visual hierarchy.
+- Light and dark modes.
+
+Avoid:
+- Excessive gradients.
+- Neon colours.
+- Cluttered dashboards.
+- Too many unnecessary cards.
+- Childish illustrations.
+- Oversized text.
+- Repeated information.
+- Blue-heavy generic admin dashboard designs.
+- Unnecessary animations.
+
+Create a consistent design system for the entire application.
+
+# 2. APPLICATION ARCHITECTURE
+
+Create four primary user roles:
+
+1. Citizen.
+2. Municipal Authority / Administrator.
+3. Transport Driver / Operator.
+4. Sanitation Worker / Collection Driver.
+
+Implement role-based authentication and permissions.
+
+Each role must have its own relevant dashboard, navigation, permissions and workflows.
+
+Main public navigation:
+
+- Home
+- Civic Issues
+- Smart Mobility
+- Waste Management
+- City Map
+- About
+
+Authenticated citizen navigation:
+
+- Overview
+- Civic Issues
+- Mobility
+- Waste Management
+- My Activity
+- Notifications
+- Profile
+
+Authority navigation:
+
+- Overview
+- Civic Operations
+- Reports
+- AI Verification
+- Department Management
+- Officer Management
+- Mobility Control
+- Waste Operations
+- Analytics
+- System Settings
+
+# 3. LANDING PAGE
+
+Create an exceptionally attractive landing page.
+
+Hero section:
+
+Heading:
+"Your City. Your Voice. A Smarter Tomorrow."
+
+Subheading:
+"One intelligent platform connecting citizens, city authorities, transportation and waste management to create cleaner, safer and more efficient cities."
+
+Primary buttons:
+- Explore Platform
+- Report an Issue
+- Explore City Map
+
+Include:
+
+- Premium smart-city hero visual.
+- Live city overview.
+- Civic issue statistics.
+- Transportation availability.
+- Waste management statistics.
+- Three major solution modules.
+- How the platform works.
+- AI-powered capabilities.
+- Citizen impact section.
+- Transparency and accountability section.
+- Footer with useful links.
+
+All buttons must navigate to working destinations.
+
+# 4. LIVE LOCATION AND GEOSPATIAL ENGINE
+
+This is one of the most important parts of the application.
+
+Implement a proper browser Geolocation API integration.
+
+Requirements:
+
+1. Request location permission when the user activates a location-dependent feature.
+2. Detect the actual current latitude and longitude.
+3. Retrieve accurate location coordinates from the browser.
+4. Display location acquisition status.
+5. Display the detected coordinates and resolved address.
+6. Reverse-geocode coordinates into a readable address.
+7. Show the user's location on an interactive map.
+8. Allow users to manually adjust their pin.
+9. Provide a location search box.
+10. Allow custom radius selection: 500 m, 1 km, 2 km, 5 km and 10 km.
+11. Update nearby results when the location or radius changes.
+12. Calculate distances using geographic coordinates.
+13. Filter nearby results using actual distance.
+14. Provide map markers for nearby issues, vehicles, garbage bins and transport stops.
+15. Implement location refresh.
+16. Handle permission denial, timeout and unavailable location.
+17. Provide manual address and map-pin fallback.
+18. Prevent invalid coordinates and inaccurate location claims.
+19. Store coordinates with appropriate timestamps and accuracy metadata.
+20. Use geospatial database queries where supported.
+
+The system must never substitute a random city location when GPS fails.
+
+Use location data only with appropriate user permission.
+
+Important: Do not claim background location tracking when the browser cannot support it. Implement foreground location updates and explicitly explain tracking limitations.
+
+Map requirements:
+
+- Interactive map.
+- Zoom and pan.
+- Current location marker.
+- Nearby places.
+- Custom radius.
+- Category filters.
+- Marker clustering.
+- Map/list view switching.
+- Directions through supported map services.
+- Loading and error states.
+
+Use a properly configured mapping provider such as Google Maps, Mapbox or OpenStreetMap with an appropriate routing/geocoding provider.
+
+Do not hardcode a map image as a substitute for an interactive map.
+
+# 5. MODULE ONE — CIVIC ISSUE REPORTING AND RESOLUTION
+
+Build a complete civic complaint management system.
+
+## A. Citizen Dashboard
+
+Display:
+
+- Total reports.
+- Pending complaints.
+- Verified complaints.
+- In-progress complaints.
+- Resolved complaints.
+- Overdue complaints.
+- Recent activity.
+- Nearby civic issues.
+- Notifications.
+- Personal complaint history.
+
+## B. Civic Issue Reporting
+
+Create a comprehensive reporting form.
+
+Fields:
+
+- Issue category.
+- Issue title.
+- Description.
+- Photo upload.
+- Video upload.
+- Current GPS location.
+- Manually selected map location.
+- Address.
+- Landmark.
+- Severity information.
+- Date and time.
+- Optional supporting information.
+
+Categories:
+
+- Potholes.
+- Damaged roads.
+- Garbage dumping.
+- Broken streetlights.
+- Water leakage.
+- Drainage blockage.
+- Damaged footpaths.
+- Open manholes.
+- Public infrastructure damage.
+- Illegal dumping.
+- Other civic issues.
+
+On submission:
+
+- Validate all fields.
+- Upload evidence.
+- Store complaint in database.
+- Generate a unique complaint ID.
+- Save geolocation.
+- Record timestamp.
+- Show genuine submission confirmation.
+- Display the complaint in the citizen dashboard.
+
+## C. Complaint Tracking
+
+Implement the complete lifecycle:
+
+Submitted → Under Review → Verified → Assigned → In Progress → Resolved.
+
+Also support:
+
+- Rejected with reason.
+- Reopened.
+- Escalated.
+- Additional evidence.
+- Citizen comments.
+- Officer comments.
+- Status history.
+- Resolution photographs.
+- Resolution feedback.
+
+## D. Community Verification
+
+Implement:
+
+- Confirm existing complaint.
+- Upvote an existing report.
+- Report incorrect information.
+- Confirm issue still exists.
+- Community severity assessment.
+- Community verification history.
+
+Prevent duplicate votes and fraudulent activity.
+
+## E. AI Civic Intelligence
+
+Implement real AI-powered functions.
+
+1. AI image classification:
+   Identify the likely civic issue from uploaded photographs.
+
+2. AI image relevance verification:
+   Determine whether uploaded evidence is relevant to the reported issue.
+
+3. Duplicate detection:
+   Compare issue category, geospatial proximity, description and image similarity to identify potential duplicates.
+
+4. Severity assessment:
+   Estimate urgency using issue type, available evidence and public impact.
+
+5. AI complaint classification:
+   Automatically categorize reports.
+
+6. AI description assistant:
+   Convert short or poorly written descriptions into structured complaint descriptions.
+
+7. Image quality validation:
+   Identify blurry or unusable images.
+
+8. Suspicious report detection:
+   Flag potentially fraudulent or inconsistent submissions.
+
+9. Department recommendation:
+   Recommend the appropriate municipal department.
+
+10. Resolution recommendation:
+    Suggest appropriate action categories for the assigned officer.
+
+Every AI result must include an explanation, confidence level where technically supported, and verification status.
+
+AI must never automatically declare an uncertain report authentic.
+
+Human authority review must remain available.
+
+## F. Municipal Authority Dashboard
+
+Implement:
+
+- Total complaints.
+- Pending complaints.
+- Verified complaints.
+- Rejected complaints.
+- Active assignments.
+- Resolved complaints.
+- Overdue complaints.
+- Department-wise statistics.
+- Ward-wise statistics.
+- Interactive issue map.
+- Complaint search and filters.
+- Officer management.
+- Department management.
+- Evidence review.
+- Complaint assignment.
+- Priority management.
+- SLA configuration.
+- Escalation management.
+- Resolution verification.
+- Officer performance.
+- Audit history.
+- Reports and exports.
+
+## G. Automatic Complaint Management
+
+Implement:
+
+- Unique complaint ID.
+- Department recommendation.
+- Assignment workflow.
+- SLA deadline calculation.
+- Overdue detection.
+- Escalation notifications.
+- Citizen status notifications.
+- Resolution confirmation requests.
+- Daily and weekly reports.
+
+All automation must be driven by persisted database records and actual status changes.
+
+# 6. MODULE TWO — SMART INFORMAL PUBLIC TRANSPORT
+
+Build a unified platform for discovering and managing informal shared transportation.
+
+## A. Commuter Dashboard
+
+Features:
+
+- Current location.
+- Destination search.
+- Nearby shared autos.
+- Nearby mini-buses.
+- Available routes.
+- Pickup points.
+- Drop-off points.
+- Estimated journey time.
+- Route distance.
+- Fare information where available.
+- Saved destinations.
+- Recent searches.
+
+## B. Route Discovery
+
+Implement:
+
+- Origin and destination selection.
+- Multiple route suggestions.
+- Shortest route.
+- Alternative routes.
+- Transfer points.
+- Walking distance to pickup.
+- Estimated journey duration.
+- Route comparison.
+- Nearby stops.
+- Available vehicle categories.
+- Multi-modal journey suggestions.
+
+Do not fabricate routes or fares.
+
+Use available route data and clearly identify estimated or community-submitted information.
+
+## C. Live Transit Information
+
+Implement:
+
+- Vehicle location sharing.
+- Live map markers.
+- Estimated arrival time.
+- Departure information.
+- Route availability.
+- Vehicle capacity.
+- Available seats.
+- Waiting time.
+- Service disruption alerts.
+- Route update notifications.
+
+Vehicle location must come from actual authorized driver updates or a clearly labelled simulation.
+
+## D. Crowdsourced Transit Network
+
+Allow:
+
+- Citizens to submit routes.
+- Drivers to register routes.
+- Drivers to update route information.
+- Passengers to report delays.
+- Users to report unavailable services.
+- Community route verification.
+- Route correction submissions.
+
+Implement moderation and verification.
+
+## E. AI Transit Intelligence
+
+Implement:
+
+1. AI route optimization.
+2. ETA prediction.
+3. Passenger demand prediction.
+4. Congestion prediction.
+5. Smart route recommendations.
+6. Alternative route recommendations.
+7. Passenger demand forecasting.
+8. Crowdsourced route validation.
+9. Natural-language travel assistant.
+10. Vehicle capacity estimation.
+
+Use actual route data and historical records when available.
+
+For unavailable real-time datasets, provide a clearly labelled demonstration environment.
+
+## F. Driver / Operator Dashboard
+
+Features:
+
+- Driver registration.
+- Driver verification.
+- Vehicle registration.
+- Vehicle type.
+- Route registration.
+- Route editing.
+- Pickup points.
+- Drop-off points.
+- Operating hours.
+- Fare information.
+- Current vehicle status.
+- Available seat updates.
+- Passenger demand.
+- Route update notifications.
+- Trip history.
+- Driver profile.
+
+## G. Advanced Transit Map
+
+Implement:
+
+- Interactive transit map.
+- Vehicle markers.
+- Route overlays.
+- Nearby pickup points.
+- Route directions.
+- Traffic-aware suggestions where supported.
+- Walking navigation.
+- Multi-modal journey planning.
+- Alternative route discovery.
+
+## H. Transport Authority Dashboard
+
+Include:
+
+- Registered drivers.
+- Registered vehicles.
+- Active routes.
+- Inactive routes.
+- Route verification.
+- Driver verification.
+- Vehicle management.
+- Passenger demand analytics.
+- Congestion hotspots.
+- Route coverage gaps.
+- Transport availability.
+- User complaints.
+- Operator performance.
+- Historical route reliability.
+
+## I. Advanced Transit Analytics
+
+Implement:
+
+- Predictive demand mapping.
+- Under-served area detection.
+- Peak-hour analysis.
+- Vehicle allocation recommendations.
+- City transit network visualization.
+- Route reliability analysis.
+- Transport coverage analytics.
+- Low-bandwidth access.
+- Multilingual voice navigation.
+
+# 7. MODULE THREE — INTELLIGENT WASTE MANAGEMENT
+
+Build a complete citizen-to-sanitation authority waste management ecosystem.
+
+## A. Citizen Waste Dashboard
+
+Display:
+
+- Nearby public bins.
+- Bin locations.
+- Collection schedule.
+- Waste complaints.
+- Overflow reports.
+- Missed pickups.
+- Household segregation activity.
+- Reward points.
+- Notifications.
+
+## B. Waste Reporting
+
+Allow citizens to:
+
+- Report overflowing bins.
+- Report illegal dumping.
+- Report missed collection.
+- Upload images.
+- Capture GPS location.
+- Select waste category.
+- Add descriptions.
+- Track complaint status.
+- Receive notifications.
+
+## C. Waste Categories
+
+Support:
+
+- Wet waste.
+- Dry waste.
+- Plastic.
+- Paper.
+- Glass.
+- Metal.
+- E-waste.
+- Other waste.
+
+## D. Smart Bin Management
+
+Implement:
+
+- Unique bin ID.
+- Bin registration.
+- GPS location.
+- Bin capacity.
+- Fill-level information.
+- Collection history.
+- Maintenance records.
+- Overflow alerts.
+- Bin status monitoring.
+- Sensor health monitoring.
+
+## E. AI Waste Intelligence
+
+Implement:
+
+1. AI waste image classification.
+2. Smart waste segregation assistant.
+3. Bin overflow prediction.
+4. Collection demand prediction.
+5. Smart garbage collection route optimization.
+6. Waste hotspot detection.
+7. Waste generation forecasting.
+8. Collection delay prediction.
+9. AI image verification.
+10. Smart collection scheduling.
+
+For image classification, allow users to upload an image and receive a category prediction with an explanation.
+
+Do not present uncertain classification as guaranteed.
+
+## F. IoT Smart Bin Integration
+
+Design an extensible IoT architecture supporting:
+
+- Ultrasonic fill-level sensors.
+- Sensor data ingestion.
+- Real-time bin status.
+- Battery monitoring.
+- Connectivity monitoring.
+- Automatic overflow alerts.
+- Sensor anomaly detection.
+- Centralized monitoring.
+
+Provide a functional simulated sensor mode if hardware is unavailable.
+
+Clearly distinguish real sensor readings from simulated readings.
+
+## G. Sanitation Driver Dashboard
+
+Implement:
+
+- Driver login.
+- Assigned routes.
+- Vehicle information.
+- Daily collection tasks.
+- Nearby bins.
+- Navigation.
+- Collection completion.
+- Before-and-after photographs.
+- Missed pickup reporting.
+- Route progress.
+- Collection history.
+- Vehicle status.
+
+## H. Waste Authority Dashboard
+
+Include:
+
+- Registered bins.
+- Normal bins.
+- Nearly full bins.
+- Overflowing bins.
+- Pending complaints.
+- Completed collections.
+- Active collection vehicles.
+- Driver management.
+- Ward-wise waste map.
+- Collection scheduling.
+- Vehicle assignment.
+- Route optimization.
+- Waste monitoring.
+- Segregation statistics.
+- Reward management.
+- Sanitation performance reports.
+
+## I. Citizen Rewards and Engagement
+
+Implement:
+
+- Verified segregation points.
+- Household participation score.
+- Community cleanliness score.
+- Monthly challenges.
+- Ward-level leaderboards.
+- Achievement badges.
+- Reward redemption.
+- Waste segregation education.
+- Community cleanliness campaigns.
+
+Rewards must be based on actual recorded and verified activities.
+
+## J. Advanced Waste Analytics
+
+Implement:
+
+- Waste generation analytics.
+- Dynamic route recommendations.
+- Vehicle allocation recommendations.
+- Recycling centre discovery.
+- Recycling partner management.
+- Estimated carbon-emission analytics.
+- Fuel consumption analytics.
+- Collection efficiency.
+- Landfill reduction indicators.
+- City-wide waste intelligence.
+
+# 8. UNIFIED SMART CITY MAP
+
+Create one central interactive map connecting all three modules.
+
+Map layers:
+
+1. Civic complaints.
+2. Potholes.
+3. Garbage dumping.
+4. Broken streetlights.
+5. Drainage problems.
+6. Shared auto routes.
+7. Mini-bus routes.
+8. Transit stops.
+9. Authorized vehicle locations.
+10. Public garbage bins.
+11. Overflowing bins.
+12. Waste collection routes.
+13. Recycling centres.
+
+Map capabilities:
+
+- Layer visibility controls.
+- Category filters.
+- Search.
+- Custom radius.
+- GPS current location.
+- Marker clustering.
+- Location details.
+- Map/list switching.
+- Ward boundaries where data exists.
+- Nearby results.
+- Route visualization.
+- Directions.
+- Refresh.
+
+Every map marker must open a meaningful details panel.
+
+Never populate the map with arbitrary locations and label them as live data.
+
+# 9. UNIFIED AI CITY ASSISTANT — NAGAR SAATHI
+
+Create an intelligent conversational assistant named Nagar Saathi.
+
+It must help citizens navigate all three modules.
+
+Capabilities:
+
+- Register a civic complaint through conversation.
+- Explain complaint status.
+- Find nearby public transport.
+- Suggest available routes.
+- Find nearby garbage bins.
+- Explain waste segregation.
+- Answer platform-related questions.
+- Explain how to report an issue.
+- Help navigate the website.
+- Provide multilingual assistance.
+- Support voice input and spoken responses where supported.
+
+Example questions:
+
+"Where is the nearest garbage collection point?"
+
+"How do I report a pothole?"
+
+"Show me shared transport routes nearby."
+
+"When will my complaint be resolved?"
+
+"Should this item go into wet or dry waste?"
+
+The assistant must use actual application data through authenticated backend functions.
+
+It must not invent complaint statuses, vehicle locations, collection times or official information.
+
+Implement:
+- Chat interface.
+- Conversation history.
+- Voice input.
+- Text-to-speech.
+- Language selector.
+- Context-aware responses.
+- Suggested questions.
+- Loading and error handling.
+
+# 10. MULTILINGUAL AND ACCESSIBILITY SUPPORT
+
+Implement language selection with persistent preferences.
+
+Initial languages:
+- English.
+- Hindi.
+
+Architect for additional Indian languages.
+
+Requirements:
+
+- Translate interface labels.
+- Translate navigation.
+- Translate notifications.
+- Localize forms.
+- Support voice input where available.
+- Support text-to-speech where available.
+- Large-text mode.
+- High-contrast mode.
+- Keyboard accessibility.
+- Screen-reader-friendly labels.
+- Clear error messages.
+- Mobile-friendly forms.
+
+Do not mix languages unexpectedly or translate user-generated content without permission.
+
+# 11. NOTIFICATION AND COMMUNICATION SYSTEM
+
+Implement centralized notifications.
+
+Notification events:
+
+- Complaint submitted.
+- Complaint verified.
+- Complaint rejected.
+- Officer assigned.
+- Complaint status changed.
+- SLA deadline approaching.
+- Complaint overdue.
+- Complaint resolved.
+- Transit route changed.
+- Vehicle availability changed.
+- Collection scheduled.
+- Bin overflow detected.
+- Waste pickup completed.
+- Reward earned.
+
+Support:
+
+- In-app notifications.
+- Email integration.
+- SMS integration through configurable providers.
+- Notification preferences.
+- Read/unread status.
+- Notification history.
+
+Only send real messages when the provider is configured and the user has appropriate consent.
+
+# 12. ADVANCED ANALYTICS AND REPORTING
+
+Create an advanced analytics centre.
+
+Civic analytics:
+- Complaints by category.
+- Complaints by ward.
+- Resolution time.
+- Overdue percentage.
+- Recurring issue locations.
+- Department performance.
+
+Transit analytics:
+- Active routes.
+- Registered vehicles.
+- Estimated waiting time.
+- Route coverage.
+- Passenger demand.
+- Congestion patterns.
+
+Waste analytics:
+- Collection completion.
+- Bin fill-level distribution.
+- Overflow frequency.
+- Waste segregation participation.
+- Collection efficiency.
+- Ward cleanliness indicators.
+
+Provide:
+- Interactive charts.
+- Date filters.
+- Category filters.
+- Ward filters.
+- Export to CSV.
+- Downloadable reports.
+- Historical comparisons.
+
+Clearly distinguish calculated metrics from estimated metrics.
+
+# 13. BACKEND AND DATABASE ARCHITECTURE
+
+Build a scalable, modular backend.
+
+Suggested database entities:
+
+Users:
+- User ID.
+- Name.
+- Email.
+- Phone.
+- Role.
+- Preferred language.
+- Account status.
+
+Civic Reports:
+- Report ID.
+- User ID.
+- Category.
+- Description.
+- Evidence URLs.
+- Latitude.
+- Longitude.
+- Address.
+- Severity.
+- AI verification result.
+- Status.
+- Department ID.
+- Officer ID.
+- SLA deadline.
+- Created timestamp.
+
+Complaint Activity:
+- Activity ID.
+- Report ID.
+- Previous status.
+- New status.
+- Actor ID.
+- Timestamp.
+- Comments.
+
+Transit Routes:
+- Route ID.
+- Route name.
+- Route geometry.
+- Pickup points.
+- Drop-off points.
+- Vehicle category.
+- Operating hours.
+- Verification status.
+
+Vehicles:
+- Vehicle ID.
+- Driver ID.
+- Vehicle type.
+- Registration details.
+- Current status.
+- Authorized location update.
+- Capacity.
+
+Transit Updates:
+- Vehicle ID.
+- Coordinates.
+- Timestamp.
+- Availability.
+- Route status.
+
+Waste Bins:
+- Bin ID.
+- Coordinates.
+- Capacity.
+- Fill level.
+- Sensor type.
+- Sensor status.
+- Collection status.
+
+Waste Collections:
+- Collection ID.
+- Bin ID.
+- Driver ID.
+- Vehicle ID.
+- Scheduled time.
+- Completion time.
+- Evidence.
+- Status.
+
+Rewards:
+- User ID.
+- Points.
+- Verified activities.
+- Redemption history.
+
+Notifications:
+- Notification ID.
+- User ID.
+- Event type.
+- Message.
+- Read status.
+- Timestamp.
+
+AI Activity:
+- AI operation ID.
+- Module.
+- Input reference.
+- Model result.
+- Confidence where supported.
+- Explanation.
+- Human review status.
+- Timestamp.
+
+Use proper relationships, indexes, geospatial queries, data validation and access controls.
+
+# 14. SECURITY AND PRIVACY
+
+Implement:
+
+- Secure authentication.
+- Role-based access control.
+- Protected admin routes.
+- Server-side authorization.
+- Input validation.
+- File upload validation.
+- Secure storage.
+- Rate limiting.
+- Audit logs.
+- Protection against unauthorized record modification.
+- Appropriate consent for location tracking.
+- Minimum necessary personal data collection.
+- Configurable data retention.
+- Secure environment variables.
+- No API keys in frontend code.
+- Privacy policy.
+- Terms of service.
+- Account deletion workflow.
+
+# 15. REAL-TIME FUNCTIONALITY
+
+Use appropriate real-time database subscriptions or event-driven updates.
+
+Examples:
+
+- New civic reports appear in authority dashboards.
+- Complaint status changes appear in citizen dashboards.
+- Authorized vehicle location updates refresh transit maps.
+- Driver collection progress updates the waste dashboard.
+- Bin sensor updates refresh bin status.
+- Notifications appear when relevant events occur.
+
+Implement loading states, retry logic, reconnection and error handling.
+
+# 16. DEMO MODE
+
+Create a clearly labelled interactive demonstration environment.
+
+Demo mode must:
+
+- Work without real user credentials.
+- Use realistic sample city data.
+- Include sample citizens, officers and drivers.
+- Show example complaints.
+- Show sample transit routes.
+- Show simulated vehicles.
+- Show simulated smart bins.
+- Demonstrate AI classification with actual model calls where configured, or a clearly labelled deterministic demonstration when not configured.
+- Demonstrate complaint assignment.
+- Demonstrate status changes.
+- Demonstrate waste collection completion.
+- Demonstrate route visualization.
+
+Never mix demo records with actual user records.
+
+Provide an obvious DEMO MODE indicator.
+
+# 17. TECHNICAL QUALITY AND PERFORMANCE
+
+Requirements:
+
+- Reusable components.
+- Clean code architecture.
+- Modular frontend.
+- Modular backend services.
+- Responsive layouts.
+- Database persistence.
+- Proper API error handling.
+- Loading skeletons.
+- Empty states.
+- Form validation.
+- Secure file uploads.
+- Image compression.
+- Pagination.
+- Search and filtering.
+- Performance optimization.
+- Mobile optimization.
+- Accessibility testing.
+- Cross-browser testing.
+
+Use the existing project stack if one already exists. Do not unnecessarily replace a working application or break existing configurations.
+
+# 18. END-TO-END FUNCTIONALITY TESTING
+
+Before considering the project complete, test the following workflows.
+
+CIVIC:
+1. Register a citizen.
+2. Submit a pothole report.
+3. Capture actual GPS coordinates with permission.
+4. Upload evidence.
+5. Run AI classification.
+6. Check duplicate detection.
+7. Display the report in the authority dashboard.
+8. Assign an officer.
+9. Update status.
+10. Notify the citizen.
+11. Upload resolution evidence.
+12. Complete resolution verification.
+
+TRANSIT:
+1. Register a driver.
+2. Register a vehicle.
+3. Submit a route.
+4. Verify the route.
+5. Display the route on the map.
+6. Update vehicle availability.
+7. Send authorized location updates.
+8. Display vehicle information to commuters.
+9. Search for a destination.
+10. Show available route options.
+
+WASTE:
+1. Register a garbage bin.
+2. Update fill-level information.
+3. Show the bin on the map.
+4. Report overflowing waste.
+5. Run AI waste classification.
+6. Create a collection task.
+7. Assign a sanitation driver.
+8. Update collection progress.
+9. Upload completion evidence.
+10. Update the bin status.
+
+AI:
+1. Test image classification.
+2. Test complaint verification.
+3. Test duplicate detection.
+4. Test severity assessment.
+5. Test department recommendations.
+6. Test route recommendations.
+7. Test waste classification.
+8. Test AI assistant.
+9. Test unavailable AI service handling.
+
+LOCATION:
+1. Test location permission.
+2. Test GPS success.
+3. Test denied permission.
+4. Test location timeout.
+5. Test manual map pin.
+6. Test radius changes.
+7. Test nearby result filtering.
+8. Test location refresh.
+
+SECURITY:
+1. Test citizen access restrictions.
+2. Test officer permissions.
+3. Test administrator permissions.
+4. Test unauthorized API requests.
+5. Test file upload validation.
+6. Test data isolation.
+
+# 19. FINAL DELIVERY REQUIREMENTS
+
+Deliver a complete working website, not merely a generated design.
+
+All three modules must have:
+- Dedicated dashboards.
+- Complete workflows.
+- Working database integration.
+- Working maps where applicable.
+- Working AI functionality where configured.
+- Proper loading and error handling.
+- Real data persistence.
+- Responsive design.
+
+Do not leave:
+- Dead buttons.
+- Empty navigation links.
+- Non-functional forms.
+- Fake AI processing.
+- Hardcoded live locations.
+- Fake notifications.
+- Unconnected dashboards.
+- Placeholder pages presented as completed features.
+
+Build in logical phases if necessary, but do not declare the project complete until the required functionality has been implemented and tested.
+
+If a feature needs an external API, hardware sensor or third-party credential, identify the dependency and implement its integration point with a transparent fallback.
+
+The final experience should be simple for citizens, powerful for authorities, practical for drivers and intelligent enough to demonstrate meaningful innovation to hackathon judges.
+
+**FINAL PRODUCT VISION:**
+
+NAGAR AI should become a unified digital operating system for city infrastructure, connecting citizens, municipal authorities, transportation networks and sanitation services through AI, geospatial intelligence, automation and transparent workflows.
+
+Build something that looks exceptional, works reliably and solves real urban problems.
+
+**Design principle: Simplicity for citizens. Intelligence for the city. Accountability for everyone.**

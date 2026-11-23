@@ -1,0 +1,52 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+@import "leaflet/dist/leaflet.css";
+
+@layer base {
+  :root {
+    --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+    --font-sans: "DM Sans", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.large-text-mode {
+  font-size: 18px;
+}
+
+.high-contrast-mode {
+  --tw-contrast: contrast(1.15);
+  filter: contrast(1.12);
+}
+
+.high-contrast-mode body {
+  background-color: #ffffff;
+  color: #000000;
+}
+
+.dark.high-contrast-mode body {
+  background-color: #000000;
+  color: #ffffff;
+}
+
+/* Leaflet map container integration */
+.leaflet-container {
+  font-family: var(--font-sans);
+  z-index: 1;
+}
+
+.dark .leaflet-tile-pane {
+  filter: brightness(0.85) contrast(1.05);
+}

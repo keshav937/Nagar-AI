@@ -1,0 +1,6 @@
+{
+  "name": "NAGAR AI — The Intelligent City Operating System",
+  "description": "Unified AI-powered Smart City Management Platform for Civic Issue Reporting, Smart Informal Public Transport, Urban Waste Management, and Nagar Saathi Multilingual Voice Companion.",
+  "requestFramePermissions": ["geolocation", "microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
