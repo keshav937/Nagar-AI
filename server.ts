@@ -17,6 +17,9 @@ import {
   getAdminConfigStatus,
   verifyAdminPasscode,
   recordAudit,
+  getGoogleAuthConfigStatus,
+  signOAuthState,
+  verifyOAuthState,
   type AuthenticatedRequest,
   type UserRole,
 } from './server/auth.ts';
@@ -36,11 +39,82 @@ import {
 } from './server/ai.ts';
 import { fetchNearbyFacilities, type FacilityCategory } from './server/places.ts';
 import {
+  searchMobilityDestination,
+  computeRealRoute,
+  fetchNearbyMobilityHubs,
+  type MobilityMode,
+} from './server/mobility.ts';
+import {
   getMessagingProviderStatus,
   notifyLinkedCaregivers,
   retryCaregiverNotification,
   dispatchSms,
 } from './server/notifications.ts';
+
+function getAppConfigJson<T>(key: string, fallback: T): T {
+  const row = db.prepare(`SELECT value FROM app_config WHERE key = ?`).get(key) as { value: string } | undefined;
+  if (!row?.value) return fallback;
+  try {
+    return JSON.parse(row.value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function awardCitizenRewardPoints(params: {
+  userId: string;
+  action: string;
+  points: number;
+  refId: string;
+  badge?: string;
+}) {
+  if (params.points <= 0) return false;
+  const existing = db.prepare(`SELECT * FROM rewards WHERE user_id = ?`).get(params.userId) as
+    | { id: string; points: number; badges_json: string; history_json: string }
+    | undefined;
+  const nowIso = new Date().toISOString();
+  const entry = { date: nowIso, action: params.action, points: params.points, refId: params.refId };
+
+  if (!existing) {
+    const badges = params.badge ? [params.badge] : [];
+    db.prepare(`
+      INSERT INTO rewards (id, user_id, points, households_verified, streak_days, badges_json, history_json)
+      VALUES (?, ?, ?, 0, 1, ?, ?)
+    `).run(`rew-${crypto.randomUUID().slice(0, 6)}`, params.userId, params.points, JSON.stringify(badges), JSON.stringify([entry]));
+    return true;
+  }
+
+  const history = JSON.parse(existing.history_json || '[]') as Array<{ refId?: string }>;
+  if (history.some((h) => h.refId === params.refId)) {
+    return false; // Idempotent: prevent duplicate award for the same verified action
+  }
+  const badges = JSON.parse(existing.badges_json || '[]') as string[];
+  if (params.badge && !badges.includes(params.badge)) {
+    badges.push(params.badge);
+  }
+  const nextPoints = existing.points + params.points;
+  if (nextPoints >= 100 && !badges.includes('Civic Guardian')) badges.push('Civic Guardian');
+  if (nextPoints >= 250 && !badges.includes('City Champion')) badges.push('City Champion');
+
+  history.unshift(entry);
+  db.prepare(`UPDATE rewards SET points = ?, badges_json = ?, history_json = ? WHERE user_id = ?`).run(
+    nextPoints,
+    JSON.stringify(badges),
+    JSON.stringify(history.slice(0, 40)),
+    params.userId
+  );
+  return true;
+}
+
+function resolvePublicBaseUrl(req: Request): string {
+  const configured = process.env.APP_URL?.trim();
+  if (configured && configured !== 'MY_APP_URL') {
+    return configured.replace(/\/+$/, '');
+  }
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`);
+  return `${proto}://${host}`;
+}
 
 initDatabase();
 
@@ -228,6 +302,7 @@ app.post('/api/auth/admin-login', rateLimit(15, 60_000), (req, res) => {
   };
   const token = signToken(authUser);
   setSessionCookie(req, res, token);
+  db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(new Date().toISOString(), authUser.id);
   recordAudit(authUser.id, 'admin', 'admin_login', 'user', authUser.id);
   res.json({ token, user: authUser });
 });
@@ -329,8 +404,246 @@ app.post('/api/auth/login', rateLimit(20, 60_000), (req, res) => {
   };
   const token = signToken(authUser);
   setSessionCookie(req, res, token);
+  db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(new Date().toISOString(), authUser.id);
   recordAudit(authUser.id, actualRole, 'user_login', 'user', authUser.id);
   res.json({ token, user: authUser });
+});
+
+app.get('/api/auth/google/config', (req, res) => {
+  const status = getGoogleAuthConfigStatus();
+  const baseUrl = resolvePublicBaseUrl(req);
+  res.json({
+    ...status,
+    redirectUri: `${baseUrl}/api/auth/google/callback`,
+  });
+});
+
+app.get('/api/auth/google/url', (req, res) => {
+  const portal = String(req.query.portal || 'citizen');
+  if (!['citizen', 'caregiver', 'authority', 'admin'].includes(portal)) {
+    return res.status(400).json({ error: 'Invalid portal role specified for Google Sign-In.' });
+  }
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) {
+    return res.status(503).json({
+      error: 'Google OAuth credentials (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) are not configured on the server.',
+      code: 'GOOGLE_OAUTH_NOT_CONFIGURED',
+    });
+  }
+
+  const baseUrl = resolvePublicBaseUrl(req);
+  const redirectUri = `${baseUrl}/api/auth/google/callback`;
+  const state = signOAuthState({
+    portal,
+    nonce: crypto.randomBytes(12).toString('hex'),
+    origin: String(req.headers.origin || baseUrl),
+  });
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    prompt: 'select_account',
+  });
+
+  res.json({
+    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+    redirectUri,
+  });
+});
+
+function renderGoogleCallbackPage(payload: { ok: boolean; error?: string; token?: string; user?: Record<string, unknown> }) {
+  const serialized = JSON.stringify(payload).replace(/</g, '\\u003c');
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>NAGAR AI — Google Sign-In</title></head>
+<body style="font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+  <div style="text-align:center;max-width:380px;padding:24px">
+    <p style="font-size:15px;font-weight:600;margin:0 0 8px">${payload.ok ? 'Sign-in verified' : 'Sign-in could not complete'}</p>
+    <p style="font-size:13px;color:#94a3b8;margin:0">${payload.ok ? 'Returning to NAGAR AI...' : (payload.error || 'Authentication error.')}</p>
+  </div>
+  <script>
+    (function(){
+      var data = ${serialized};
+      if (window.opener) {
+        window.opener.postMessage({ type: data.ok ? 'NAGAR_GOOGLE_AUTH_SUCCESS' : 'NAGAR_GOOGLE_AUTH_ERROR', payload: data }, '*');
+      }
+      setTimeout(function(){ window.close(); }, 350);
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+app.get(['/api/auth/google/callback', '/api/auth/google/callback/'], async (req, res) => {
+  const code = String(req.query.code || '');
+  const stateRaw = String(req.query.state || '');
+  const errParam = String(req.query.error || '');
+
+  if (errParam) {
+    return res.status(400).send(renderGoogleCallbackPage({ ok: false, error: `Google sign-in cancelled (${errParam}).` }));
+  }
+  const state = verifyOAuthState(stateRaw);
+  if (!state || !code) {
+    return res.status(400).send(renderGoogleCallbackPage({ ok: false, error: 'Invalid or expired OAuth verification state.' }));
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) {
+    return res.status(503).send(renderGoogleCallbackPage({ ok: false, error: 'Google OAuth credentials missing on server.' }));
+  }
+
+  try {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const redirectUri = `${baseUrl}/api/auth/google/callback`;
+    const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }).toString(),
+      signal: AbortSignal.timeout(8000),
+    });
+    const tokenData = (await tokenResp.json()) as { access_token?: string; error?: string; error_description?: string };
+    if (!tokenResp.ok || !tokenData.access_token) {
+      return res
+        .status(401)
+        .send(renderGoogleCallbackPage({ ok: false, error: tokenData.error_description || 'Failed to exchange Google authorization code.' }));
+    }
+
+    const profileResp = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const profile = (await profileResp.json()) as {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean;
+      name?: string;
+      picture?: string;
+    };
+    if (!profileResp.ok || !profile.email || !profile.email_verified) {
+      return res.status(401).send(renderGoogleCallbackPage({ ok: false, error: 'Verified Google email address is required.' }));
+    }
+
+    const email = profile.email.trim().toLowerCase();
+    const googleSub = String(profile.sub || '');
+    const displayName = String(profile.name || email.split('@')[0]);
+    const avatarUrl = String(profile.picture || '');
+    const portal = state.portal as 'citizen' | 'caregiver' | 'authority' | 'admin';
+    const nowIso = new Date().toISOString();
+
+    let userRow = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email) as Record<string, unknown> | undefined;
+
+    if (userRow && userRow.account_status !== 'active') {
+      return res.status(403).send(renderGoogleCallbackPage({ ok: false, error: 'This account is suspended or inactive.' }));
+    }
+
+    if (portal === 'admin') {
+      const superEmail = (process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
+      if (!userRow && superEmail && email === superEmail) {
+        const id = `adm-${crypto.randomUUID().slice(0, 8)}`;
+        db.prepare(`
+          INSERT INTO users (id, name, email, password_hash, role, preferred_language, auth_provider, google_sub, avatar_url, last_login_at, created_at)
+          VALUES (?, ?, ?, ?, 'admin', 'en', 'google', ?, ?, ?, ?)
+        `).run(id, displayName, email, hashPassword(crypto.randomBytes(16).toString('hex')), googleSub, avatarUrl, nowIso, nowIso);
+        userRow = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as Record<string, unknown>;
+      } else if (!userRow || userRow.role !== 'admin') {
+        return res.status(403).send(
+          renderGoogleCallbackPage({
+            ok: false,
+            error: 'Admin Google Sign-In is restricted to pre-authorized Administrator emails.',
+          })
+        );
+      }
+    } else if (portal === 'authority') {
+      if (!userRow || !['authority', 'transit_driver', 'sanitation_driver'].includes(String(userRow.role))) {
+        return res.status(403).send(
+          renderGoogleCallbackPage({
+            ok: false,
+            error: 'Officer Google Sign-In requires a pre-authorized officer account provisioned by an Administrator.',
+          })
+        );
+      }
+    } else if (portal === 'caregiver') {
+      const secCfg = getAppConfigJson('security_settings', { allowCaregiverGoogleSignup: true, allowCitizenGoogleSignup: true });
+      if (!userRow) {
+        if (!secCfg.allowCaregiverGoogleSignup) {
+          return res.status(403).send(renderGoogleCallbackPage({ ok: false, error: 'Google caregiver sign-up is disabled by administrator.' }));
+        }
+        const id = `usr-${crypto.randomUUID().slice(0, 8)}`;
+        const recoveryKey = crypto.randomBytes(6).toString('hex').toUpperCase();
+        db.prepare(`
+          INSERT INTO users (id, name, email, phone, password_hash, recovery_key_hash, role, preferred_language, auth_provider, google_sub, avatar_url, last_login_at, created_at)
+          VALUES (?, ?, ?, '', ?, ?, 'caregiver', 'en', 'google', ?, ?, ?, ?)
+        `).run(id, displayName, email, hashPassword(crypto.randomBytes(16).toString('hex')), hashPassword(recoveryKey), googleSub, avatarUrl, nowIso, nowIso);
+        userRow = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as Record<string, unknown>;
+      } else if (userRow.role !== 'caregiver') {
+        return res.status(403).send(
+          renderGoogleCallbackPage({
+            ok: false,
+            error: `This Google email is registered under the "${String(userRow.role)}" role. Switch to the matching portal.`,
+          })
+        );
+      }
+    } else {
+      const secCfg = getAppConfigJson('security_settings', { allowCaregiverGoogleSignup: true, allowCitizenGoogleSignup: true });
+      if (!userRow) {
+        if (!secCfg.allowCitizenGoogleSignup) {
+          return res.status(403).send(renderGoogleCallbackPage({ ok: false, error: 'Google citizen sign-up is disabled by administrator.' }));
+        }
+        const id = `usr-${crypto.randomUUID().slice(0, 8)}`;
+        const recoveryKey = crypto.randomBytes(6).toString('hex').toUpperCase();
+        db.prepare(`
+          INSERT INTO users (id, name, email, phone, password_hash, recovery_key_hash, role, preferred_language, auth_provider, google_sub, avatar_url, last_login_at, created_at)
+          VALUES (?, ?, ?, '', ?, ?, 'citizen', 'en', 'google', ?, ?, ?, ?)
+        `).run(id, displayName, email, hashPassword(crypto.randomBytes(16).toString('hex')), hashPassword(recoveryKey), googleSub, avatarUrl, nowIso, nowIso);
+        db.prepare(`INSERT INTO citizen_profiles (user_id, updated_at) VALUES (?, ?)`).run(id, nowIso);
+        db.prepare(`INSERT INTO rewards (id, user_id, points) VALUES (?, ?, 0)`).run(`rew-${crypto.randomUUID().slice(0, 8)}`, id);
+        userRow = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as Record<string, unknown>;
+      } else if (userRow.role !== 'citizen') {
+        return res.status(403).send(
+          renderGoogleCallbackPage({
+            ok: false,
+            error: `This Google email is registered under the "${String(userRow.role)}" role. Switch to the matching portal.`,
+          })
+        );
+      }
+    }
+
+    db.prepare(`UPDATE users SET google_sub = COALESCE(NULLIF(google_sub, ''), ?), avatar_url = COALESCE(NULLIF(?, ''), avatar_url), last_login_at = ? WHERE id = ?`).run(
+      googleSub,
+      avatarUrl,
+      nowIso,
+      String(userRow.id)
+    );
+
+    const authUser = {
+      id: String(userRow.id),
+      name: String(userRow.name),
+      email: String(userRow.email),
+      phone: String(userRow.phone || ''),
+      role: String(userRow.role) as UserRole,
+      departmentId: String(userRow.department_id || ''),
+      preferredLanguage: (String(userRow.preferred_language) === 'hi' ? 'hi' : 'en') as 'en' | 'hi',
+    };
+    const token = signToken(authUser);
+    setSessionCookie(req, res, token);
+    recordAudit(authUser.id, authUser.role, 'google_oauth_login', 'user', authUser.id, { portal });
+    return res.send(renderGoogleCallbackPage({ ok: true, token, user: authUser }));
+  } catch (err) {
+    return res
+      .status(500)
+      .send(renderGoogleCallbackPage({ ok: false, error: err instanceof Error ? err.message : 'Google authentication failed.' }));
+  }
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -425,39 +738,108 @@ app.delete('/api/auth/account', requireAuth, (req: AuthenticatedRequest, res) =>
 // ============================================================================
 // ADMINISTRATOR DASHBOARD APIs (STRICTLY role === 'admin')
 // ============================================================================
-app.get('/api/admin/overview', requireAuth, requireRole('admin'), (_req, res) => {
+app.get('/api/admin/overview', requireAuth, requireRole('admin'), async (_req, res) => {
   const usersByRole = db
-    .prepare(`SELECT role, COUNT(*) as count FROM users WHERE account_status = 'active' GROUP BY role`)
+    .prepare(`SELECT role, COUNT(*) as count FROM users WHERE account_status != 'deleted' GROUP BY role`)
     .all() as Array<{ role: string; count: number }>;
   const reportsByStatus = db
     .prepare(`SELECT status, COUNT(*) as count FROM civic_reports GROUP BY status`)
     .all() as Array<{ status: string; count: number }>;
-  const totalUsers = (db.prepare(`SELECT COUNT(*) as c FROM users WHERE account_status = 'active'`).get() as { c: number }).c;
+  const totalUsers = (db.prepare(`SELECT COUNT(*) as c FROM users WHERE account_status != 'deleted'`).get() as { c: number }).c;
   const totalReports = (db.prepare(`SELECT COUNT(*) as c FROM civic_reports`).get() as { c: number }).c;
   const totalOfficers = (db.prepare(`SELECT COUNT(*) as c FROM officers`).get() as { c: number }).c;
   const activeSosCount = (db.prepare(`SELECT COUNT(*) as c FROM sos_incidents WHERE status = 'active'`).get() as { c: number }).c;
+  const totalGrievances = (db.prepare(`SELECT COUNT(*) as c FROM authority_grievances`).get() as { c: number }).c;
+  const openGrievances = (db.prepare(`SELECT COUNT(*) as c FROM authority_grievances WHERE status NOT IN ('Resolved', 'Dismissed')`).get() as { c: number }).c;
+  const totalMedicalRequests = (db.prepare(`SELECT COUNT(*) as c FROM medical_requests`).get() as { c: number }).c;
+  const activeMedicalRequests = (db.prepare(`SELECT COUNT(*) as c FROM medical_requests WHERE status NOT IN ('Resolved', 'Cancelled')`).get() as { c: number }).c;
   const recentUsers = db
-    .prepare(`SELECT id, name, email, phone, role, department_id, created_at FROM users WHERE account_status = 'active' ORDER BY created_at DESC LIMIT 50`)
+    .prepare(`SELECT id, name, email, phone, role, department_id, account_status, auth_provider, last_login_at, created_at FROM users WHERE account_status != 'deleted' ORDER BY created_at DESC LIMIT 100`)
     .all();
-  const auditLogs = db.prepare(`SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 50`).all();
+  const auditLogs = db.prepare(`SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100`).all();
+  const departments = db.prepare(`SELECT * FROM departments ORDER BY name ASC`).all();
+  const officers = db
+    .prepare(`SELECT o.*, d.name as department_name, u.email as account_email, u.account_status FROM officers o JOIN departments d ON o.department_id = d.id LEFT JOIN users u ON o.user_id = u.id ORDER BY o.name ASC`)
+    .all();
+  const slaRules = db
+    .prepare(`SELECT s.*, d.name as department_name FROM sla_rules s JOIN departments d ON s.department_id = d.id ORDER BY s.category ASC`)
+    .all();
+  const caregiverLinks = db
+    .prepare(
+      `SELECT cr.*, u.name as citizen_name, u.email as citizen_email
+       FROM caregiver_relationships cr JOIN users u ON cr.citizen_id = u.id
+       ORDER BY cr.updated_at DESC LIMIT 80`
+    )
+    .all();
+  const grievances = (db
+    .prepare(
+      `SELECT g.*, u.name as citizen_name, u.email as citizen_email, d.name as department_name
+       FROM authority_grievances g
+       JOIN users u ON g.citizen_id = u.id
+       LEFT JOIN departments d ON g.target_department_id = d.id
+       ORDER BY g.created_at DESC LIMIT 80`
+    )
+    .all() as Array<Record<string, unknown>>)
+    .map((g) => ({
+      ...g,
+      evidenceUrls: JSON.parse(String(g.evidence_urls_json || '[]')),
+      resolutionEvidenceUrls: JSON.parse(String(g.resolution_evidence_urls_json || '[]')),
+    }));
+  const medicalRequests = db
+    .prepare(
+      `SELECT m.*, u.name as citizen_name, u.phone as citizen_phone
+       FROM medical_requests m JOIN users u ON m.citizen_id = u.id
+       ORDER BY m.created_at DESC LIMIT 80`
+    )
+    .all();
+  const smsLogs = db
+    .prepare(`SELECT id, event_type, caregiver_phone, sms_status, sms_error, whatsapp_status, created_at FROM caregiver_notifications ORDER BY created_at DESC LIMIT 40`)
+    .all();
+
+  const elevenStatus = await checkElevenLabsStatus(false);
 
   res.json({
     totalUsers,
     totalReports,
     totalOfficers,
     activeSosCount,
+    totalGrievances,
+    openGrievances,
+    totalMedicalRequests,
+    activeMedicalRequests,
     usersByRole,
     reportsByStatus,
     recentUsers,
+    departments,
+    officers,
+    slaRules,
+    caregiverLinks,
+    grievances,
+    medicalRequests,
+    smsLogs,
     auditLogs,
+    rewardConfig: getAppConfigJson('reward_config', {
+      verifiedReportPoints: 20,
+      resolutionConfirmedPoints: 30,
+      segregationPoints: 25,
+      maxDailyClaims: 10,
+    }),
+    securitySettings: getAppConfigJson('security_settings', {
+      sessionTtlHours: 12,
+      allowCitizenGoogleSignup: true,
+      allowCaregiverGoogleSignup: true,
+    }),
     messagingProvider: getMessagingProviderStatus(),
     geminiConfigured: isGeminiConfigured(),
+    elevenLabsConfigured: elevenStatus.configured,
+    googleOAuth: getGoogleAuthConfigStatus(),
   });
 });
 
 app.post('/api/admin/officers', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
   const name = String(req.body?.name || '').trim();
   const email = String(req.body?.email || '').trim().toLowerCase();
+  const phone = String(req.body?.phone || '').trim();
   const password = String(req.body?.password || '');
   const departmentId = String(req.body?.departmentId || '').trim();
   const badgeNo = String(req.body?.badgeNo || '').trim().toUpperCase();
@@ -475,21 +857,165 @@ app.post('/api/admin/officers', requireAuth, requireRole('admin'), (req: Authent
   const nowIso = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO users (id, name, email, password_hash, recovery_key_hash, role, department_id, preferred_language, created_at)
-    VALUES (?, ?, ?, ?, ?, 'authority', ?, 'en', ?)
-  `).run(userId, name, email, hashPassword(password), hashPassword(recoveryKey), departmentId, nowIso);
+    INSERT INTO users (id, name, email, phone, password_hash, recovery_key_hash, role, department_id, preferred_language, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'authority', ?, 'en', ?)
+  `).run(userId, name, email, phone, hashPassword(password), hashPassword(recoveryKey), departmentId, nowIso);
 
-  db.prepare(`INSERT INTO officers (id, user_id, department_id, name, badge_no, ward) VALUES (?, ?, ?, ?, ?, ?)`).run(
+  db.prepare(`INSERT INTO officers (id, user_id, department_id, name, badge_no, ward, email, phone, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`).run(
     officerId,
     userId,
     departmentId,
     name,
     badgeNo,
-    ward
+    ward,
+    email,
+    phone
   );
 
   recordAudit(req.authUser!.id, 'admin', 'create_officer_account', 'officer', officerId, { departmentId, badgeNo });
   res.status(201).json({ userId, officerId, name, email, badgeNo, recoveryKey });
+});
+
+app.post('/api/admin/admins', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const name = String(req.body?.name || '').trim();
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || crypto.randomBytes(12).toString('hex'));
+
+  if (!name || !email || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid administrator name and email address are required.' });
+  }
+  const existing = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email);
+  if (existing) return res.status(409).json({ error: 'An account with this email already exists.' });
+
+  const userId = `adm-${crypto.randomUUID().slice(0, 8)}`;
+  const recoveryKey = crypto.randomBytes(6).toString('hex').toUpperCase();
+  db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, recovery_key_hash, role, preferred_language, created_at)
+    VALUES (?, ?, ?, ?, ?, 'admin', 'en', ?)
+  `).run(userId, name, email, hashPassword(password), hashPassword(recoveryKey), new Date().toISOString());
+
+  recordAudit(req.authUser!.id, 'admin', 'authorize_admin_email', 'user', userId, { email });
+  res.status(201).json({ id: userId, name, email, recoveryKey });
+});
+
+app.patch('/api/admin/users/:id/status', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const status = ['active', 'suspended'].includes(req.body?.accountStatus) ? req.body.accountStatus : null;
+  if (!status) return res.status(400).json({ error: 'Status must be active or suspended.' });
+  if (req.params.id === req.authUser!.id) {
+    return res.status(400).json({ error: 'You cannot suspend your own administrator account.' });
+  }
+  db.prepare(`UPDATE users SET account_status = ? WHERE id = ?`).run(status, req.params.id);
+  db.prepare(`UPDATE officers SET status = ? WHERE user_id = ?`).run(status, req.params.id);
+  recordAudit(req.authUser!.id, 'admin', 'update_user_status', 'user', req.params.id, { status });
+  res.json({ ok: true, accountStatus: status });
+});
+
+app.post('/api/admin/departments', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const name = String(req.body?.name || '').trim();
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  const slaHours = Math.max(4, Math.min(720, Number(req.body?.slaHours) || 48));
+  const headName = String(req.body?.headName || 'Department Head').trim();
+  if (!name || !code) return res.status(400).json({ error: 'Department name and code are required.' });
+  const id = `dept-${crypto.randomUUID().slice(0, 6)}`;
+  db.prepare(`INSERT INTO departments (id, name, code, sla_hours, head_name, is_active) VALUES (?, ?, ?, ?, ?, 1)`).run(
+    id,
+    name,
+    code,
+    slaHours,
+    headName
+  );
+  recordAudit(req.authUser!.id, 'admin', 'create_department', 'department', id, { name, code, slaHours });
+  res.status(201).json({ id, name, code, slaHours, headName });
+});
+
+app.patch('/api/admin/departments/:id', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const dept = db.prepare(`SELECT * FROM departments WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!dept) return res.status(404).json({ error: 'Department not found.' });
+  const name = req.body?.name ? String(req.body.name).trim() : String(dept.name);
+  const slaHours = req.body?.slaHours ? Math.max(4, Math.min(720, Number(req.body.slaHours))) : Number(dept.sla_hours);
+  const headName = req.body?.headName ? String(req.body.headName).trim() : String(dept.head_name);
+  const isActive = req.body?.isActive !== undefined ? (req.body.isActive ? 1 : 0) : Number(dept.is_active ?? 1);
+
+  db.prepare(`UPDATE departments SET name = ?, sla_hours = ?, head_name = ?, is_active = ? WHERE id = ?`).run(
+    name,
+    slaHours,
+    headName,
+    isActive,
+    req.params.id
+  );
+  recordAudit(req.authUser!.id, 'admin', 'update_department', 'department', req.params.id, { name, slaHours, isActive });
+  res.json({ ok: true });
+});
+
+app.put('/api/admin/sla-rules', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const rules = Array.isArray(req.body?.rules) ? req.body.rules : [];
+  const nowIso = new Date().toISOString();
+  const stmt = db.prepare(`UPDATE sla_rules SET department_id = ?, sla_hours = ?, escalation_hours = ?, updated_at = ? WHERE id = ?`);
+  for (const r of rules) {
+    if (r?.id && r?.departmentId) {
+      stmt.run(String(r.departmentId), Math.max(4, Number(r.slaHours) || 48), Math.max(1, Number(r.escalationHours) || 24), nowIso, String(r.id));
+    }
+  }
+  recordAudit(req.authUser!.id, 'admin', 'update_sla_rules', 'system', 'sla_rules');
+  res.json({ ok: true });
+});
+
+app.put('/api/admin/reward-config', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const next = {
+    verifiedReportPoints: Math.max(0, Math.min(500, Number(req.body?.verifiedReportPoints) || 20)),
+    resolutionConfirmedPoints: Math.max(0, Math.min(500, Number(req.body?.resolutionConfirmedPoints) || 30)),
+    segregationPoints: Math.max(0, Math.min(500, Number(req.body?.segregationPoints) || 25)),
+    maxDailyClaims: Math.max(1, Math.min(50, Number(req.body?.maxDailyClaims) || 10)),
+  };
+  db.prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES ('reward_config', ?)`).run(JSON.stringify(next));
+  recordAudit(req.authUser!.id, 'admin', 'update_reward_config', 'system', 'reward_config', next);
+  res.json({ ok: true, rewardConfig: next });
+});
+
+app.put('/api/admin/security-settings', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const next = {
+    sessionTtlHours: Math.max(1, Math.min(168, Number(req.body?.sessionTtlHours) || 12)),
+    allowCitizenGoogleSignup: Boolean(req.body?.allowCitizenGoogleSignup ?? true),
+    allowCaregiverGoogleSignup: Boolean(req.body?.allowCaregiverGoogleSignup ?? true),
+  };
+  db.prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES ('security_settings', ?)`).run(JSON.stringify(next));
+  recordAudit(req.authUser!.id, 'admin', 'update_security_settings', 'system', 'security_settings', next);
+  res.json({ ok: true, securitySettings: next });
+});
+
+app.post('/api/admin/notifications/broadcast', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const targetRole = String(req.body?.targetRole || 'citizen');
+  const title = String(req.body?.title || '').trim();
+  const message = String(req.body?.message || '').trim();
+  if (!title || !message) return res.status(400).json({ error: 'Broadcast title and message are required.' });
+
+  const users =
+    targetRole === 'all'
+      ? (db.prepare(`SELECT id, role FROM users WHERE account_status = 'active'`).all() as Array<{ id: string; role: string }>)
+      : (db.prepare(`SELECT id, role FROM users WHERE account_status = 'active' AND role = ?`).all(targetRole) as Array<{
+          id: string;
+          role: string;
+        }>);
+
+  const nowIso = new Date().toISOString();
+  const ins = db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, ?, 'admin_broadcast', ?, ?, ?, '', 0, ?)
+  `);
+  for (const u of users) {
+    ins.run(`not-${crypto.randomUUID().slice(0, 8)}`, u.id, u.role, title, message, message, nowIso);
+  }
+  recordAudit(req.authUser!.id, 'admin', 'broadcast_notification', 'notification', targetRole, { count: users.length, title });
+  broadcastEvent('notification_broadcast', { targetRole, title });
+  res.json({ ok: true, sentCount: users.length });
+});
+
+app.post('/api/admin/caregiver-links/:id/revoke', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const nowIso = new Date().toISOString();
+  db.prepare(`UPDATE caregiver_relationships SET status = 'revoked', updated_at = ? WHERE id = ?`).run(nowIso, req.params.id);
+  db.prepare(`UPDATE caregiver_access_tokens SET revoked_at = ? WHERE relationship_id = ? AND revoked_at = ''`).run(nowIso, req.params.id);
+  recordAudit(req.authUser!.id, 'admin', 'admin_revoke_caregiver_link', 'caregiver_relationship', req.params.id);
+  res.json({ ok: true });
 });
 
 // ============================================================================
@@ -579,6 +1105,64 @@ app.get('/api/places/nearby', requireAuth, rateLimit(25, 60_000), async (req, re
 // ============================================================================
 // WOMEN SAFETY, CAREGIVER LINKING, LIVE LOCATION & SOS EMERGENCY
 // ============================================================================
+app.get('/api/citizen/dashboard-summary', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const userId = req.authUser!.id;
+  const reports = db
+    .prepare(`SELECT id, report_code, category, title, status, severity, address, updated_at FROM civic_reports WHERE user_id = ? ORDER BY created_at DESC`)
+    .all(userId) as Array<Record<string, unknown>>;
+  const grievances = db
+    .prepare(`SELECT id, grievance_code, title, status, updated_at FROM authority_grievances WHERE citizen_id = ? ORDER BY created_at DESC`)
+    .all(userId) as Array<Record<string, unknown>>;
+  const medicalRequests = db
+    .prepare(`SELECT id, request_code, request_type, urgency, status, selected_facility_name, updated_at FROM medical_requests WHERE citizen_id = ? ORDER BY created_at DESC`)
+    .all(userId) as Array<Record<string, unknown>>;
+  const activeSos = db
+    .prepare(`SELECT id, incident_code, status, trigger_address, created_at FROM sos_incidents WHERE citizen_id = ? AND status IN ('active', 'acknowledged') ORDER BY created_at DESC LIMIT 1`)
+    .get(userId);
+  const activeSession = db
+    .prepare(`SELECT id, status, expires_at, last_address, last_location_at FROM safety_sessions WHERE citizen_id = ? AND status = 'active' AND expires_at > ? ORDER BY started_at DESC LIMIT 1`)
+    .get(userId, new Date().toISOString());
+  const caregiversCount = (
+    db.prepare(`SELECT COUNT(*) as c FROM caregiver_relationships WHERE citizen_id = ? AND status = 'active'`).get(userId) as { c: number }
+  ).c;
+  const rewards = db.prepare(`SELECT points, badges_json, streak_days FROM rewards WHERE user_id = ?`).get(userId) as
+    | { points: number; badges_json: string; streak_days: number }
+    | undefined;
+  const unreadNotifications = (
+    db.prepare(`SELECT COUNT(*) as c FROM notifications WHERE user_id = ? AND is_read = 0`).get(userId) as { c: number }
+  ).c;
+
+  res.json({
+    reports: {
+      total: reports.length,
+      pending: reports.filter((r) => ['Submitted', 'Under Review', 'Verified', 'Assigned', 'In Progress', 'Reopened', 'Escalated'].includes(String(r.status))).length,
+      resolved: reports.filter((r) => r.status === 'Resolved').length,
+      recent: reports.slice(0, 4),
+    },
+    grievances: {
+      total: grievances.length,
+      open: grievances.filter((g) => !['Resolved', 'Dismissed'].includes(String(g.status))).length,
+      recent: grievances.slice(0, 3),
+    },
+    medical: {
+      total: medicalRequests.length,
+      active: medicalRequests.filter((m) => !['Resolved', 'Cancelled'].includes(String(m.status))).length,
+      recent: medicalRequests.slice(0, 3),
+    },
+    safety: {
+      activeSession: activeSession || null,
+      activeSos: activeSos || null,
+      verifiedCaregivers: caregiversCount,
+    },
+    rewards: {
+      points: rewards?.points || 0,
+      badges: rewards ? JSON.parse(rewards.badges_json || '[]') : [],
+      streakDays: rewards?.streak_days || 0,
+    },
+    unreadNotifications,
+  });
+});
+
 app.get('/api/safety/dashboard', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
   const userId = req.authUser!.id;
   const profile = db.prepare(`SELECT * FROM citizen_profiles WHERE user_id = ?`).get(userId) || {
@@ -591,7 +1175,8 @@ app.get('/api/safety/dashboard', requireAuth, requireRole('citizen'), (req: Auth
   const contacts = db.prepare(`SELECT * FROM emergency_contacts WHERE user_id = ? ORDER BY is_primary DESC, created_at DESC`).all(userId);
   const caregivers = db
     .prepare(
-      `SELECT id, caregiver_name, caregiver_phone, status, notify_in_app, notify_sms, notify_whatsapp, created_at, updated_at
+      `SELECT id, caregiver_name, caregiver_phone, status, notify_in_app, notify_sms, notify_whatsapp,
+              can_view_location, can_receive_sos, can_view_profile, verified_at, created_at, updated_at
        FROM caregiver_relationships WHERE citizen_id = ? ORDER BY created_at DESC`
     )
     .all(userId);
@@ -600,6 +1185,9 @@ app.get('/api/safety/dashboard', requireAuth, requireRole('citizen'), (req: Auth
       `SELECT id, relationship_id, expires_at, revoked_at, last_accessed_at, created_at
        FROM caregiver_access_tokens WHERE citizen_id = ? AND revoked_at = '' ORDER BY created_at DESC`
     )
+    .all(userId);
+  const zones = db
+    .prepare(`SELECT * FROM safety_zones WHERE citizen_id = ? ORDER BY created_at DESC`)
     .all(userId);
   const activeSession = db
     .prepare(`SELECT * FROM safety_sessions WHERE citizen_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1`)
@@ -624,11 +1212,40 @@ app.get('/api/safety/dashboard', requireAuth, requireRole('citizen'), (req: Auth
     contacts,
     caregivers,
     activeTokens,
+    zones,
     activeSession: validSession,
     sosIncidents,
     caregiverNotifications,
     messagingProvider: getMessagingProviderStatus(),
   });
+});
+
+app.get('/api/safety/zones', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const zones = db.prepare(`SELECT * FROM safety_zones WHERE citizen_id = ? ORDER BY created_at DESC`).all(req.authUser!.id);
+  res.json({ zones });
+});
+
+app.post('/api/safety/zones', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const name = String(req.body?.name || '').trim();
+  const zoneType = req.body?.zoneType === 'alert_zone' ? 'alert_zone' : 'safe_zone';
+  const lat = Number(req.body?.lat);
+  const lng = Number(req.body?.lng);
+  const radiusM = Math.max(50, Math.min(5000, Number(req.body?.radiusM) || 250));
+  const address = String(req.body?.address || '').trim();
+  if (!name || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'Zone name and valid coordinates are required.' });
+  }
+  const id = `sz-${crypto.randomUUID().slice(0, 8)}`;
+  db.prepare(`
+    INSERT INTO safety_zones (id, citizen_id, name, zone_type, lat, lng, radius_m, address, is_active, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+  `).run(id, req.authUser!.id, name, zoneType, lat, lng, radiusM, address, new Date().toISOString());
+  res.status(201).json({ id });
+});
+
+app.delete('/api/safety/zones/:id', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  db.prepare(`DELETE FROM safety_zones WHERE id = ? AND citizen_id = ?`).run(req.params.id, req.authUser!.id);
+  res.json({ ok: true });
 });
 
 app.put('/api/safety/profile', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
@@ -789,6 +1406,33 @@ app.post('/api/safety/caregivers/:id/revoke', requireAuth, requireRole('citizen'
   );
 
   recordAudit(req.authUser!.id, 'citizen', 'revoke_caregiver', 'caregiver_relationship', req.params.id);
+  res.json({ ok: true });
+});
+
+app.patch('/api/safety/caregivers/:id/permissions', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const rel = db
+    .prepare(`SELECT * FROM caregiver_relationships WHERE id = ? AND citizen_id = ?`)
+    .get(req.params.id, req.authUser!.id) as Record<string, unknown> | undefined;
+  if (!rel) return res.status(404).json({ error: 'Caregiver link not found.' });
+
+  const canViewLocation = req.body?.canViewLocation !== undefined ? (req.body.canViewLocation ? 1 : 0) : Number(rel.can_view_location ?? 1);
+  const canReceiveSos = req.body?.canReceiveSos !== undefined ? (req.body.canReceiveSos ? 1 : 0) : Number(rel.can_receive_sos ?? 1);
+  const canViewProfile = req.body?.canViewProfile !== undefined ? (req.body.canViewProfile ? 1 : 0) : Number(rel.can_view_profile ?? 1);
+  const notifySms = req.body?.notifySms !== undefined ? (req.body.notifySms ? 1 : 0) : Number(rel.notify_sms ?? 0);
+  const notifyWhatsapp = req.body?.notifyWhatsapp !== undefined ? (req.body.notifyWhatsapp ? 1 : 0) : Number(rel.notify_whatsapp ?? 0);
+  const nowIso = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE caregiver_relationships
+    SET can_view_location = ?, can_receive_sos = ?, can_view_profile = ?, notify_sms = ?, notify_whatsapp = ?, updated_at = ?
+    WHERE id = ? AND citizen_id = ?
+  `).run(canViewLocation, canReceiveSos, canViewProfile, notifySms, notifyWhatsapp, nowIso, req.params.id, req.authUser!.id);
+
+  recordAudit(req.authUser!.id, 'citizen', 'update_caregiver_permissions', 'caregiver_relationship', req.params.id, {
+    canViewLocation,
+    canReceiveSos,
+    canViewProfile,
+  });
   res.json({ ok: true });
 });
 
@@ -1103,23 +1747,31 @@ app.get('/api/caregiver/portal', requireAuth, requireRole('caregiver'), (req: Au
       };
     }
 
-    const activeSession = db
-      .prepare(
-        `SELECT id, status, started_at, expires_at, last_lat, last_lng, last_accuracy_m, last_address, last_location_at
-         FROM safety_sessions WHERE citizen_id = ? AND status = 'active' AND expires_at > ? ORDER BY started_at DESC LIMIT 1`
-      )
-      .get(String(rel.citizen_id), new Date().toISOString()) as Record<string, unknown> | undefined;
+    const canViewLocation = Number(rel.can_view_location ?? 1) === 1;
+    const canReceiveSos = Number(rel.can_receive_sos ?? 1) === 1;
+    const canViewProfile = Number(rel.can_view_profile ?? 1) === 1;
 
-    const sosAlerts = db
-      .prepare(
-        `SELECT id, incident_code, status, trigger_lat, trigger_lng, trigger_accuracy_m, trigger_address, location_status, notes, created_at, updated_at
-         FROM sos_incidents WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 10`
-      )
-      .all(String(rel.citizen_id));
+    const activeSession = canViewLocation
+      ? (db
+          .prepare(
+            `SELECT id, status, started_at, expires_at, last_lat, last_lng, last_accuracy_m, last_address, last_location_at
+             FROM safety_sessions WHERE citizen_id = ? AND status = 'active' AND expires_at > ? ORDER BY started_at DESC LIMIT 1`
+          )
+          .get(String(rel.citizen_id), new Date().toISOString()) as Record<string, unknown> | undefined)
+      : undefined;
 
-    const emergencyProfile = db
-      .prepare(`SELECT blood_group, medical_notes, emergency_phone, home_ward FROM citizen_profiles WHERE user_id = ?`)
-      .get(String(rel.citizen_id));
+    const sosAlerts = canReceiveSos
+      ? db
+          .prepare(
+            `SELECT id, incident_code, status, trigger_lat, trigger_lng, trigger_accuracy_m, trigger_address, location_status, notes, response_notes, created_at, updated_at
+             FROM sos_incidents WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 10`
+          )
+          .all(String(rel.citizen_id))
+      : [];
+
+    const emergencyProfile = canViewProfile
+      ? db.prepare(`SELECT blood_group, medical_notes, emergency_phone, home_ward FROM citizen_profiles WHERE user_id = ?`).get(String(rel.citizen_id))
+      : null;
 
     recordAudit(caregiverId, 'caregiver', 'view_citizen_safety_data', 'citizen', String(rel.citizen_id));
 
@@ -1130,6 +1782,11 @@ app.get('/api/caregiver/portal', requireAuth, requireRole('caregiver'), (req: Au
       citizenPhone: rel.citizen_phone,
       status: rel.status,
       authorized: true,
+      permissions: {
+        canViewLocation,
+        canReceiveSos,
+        canViewProfile,
+      },
       activeSession: activeSession || null,
       sosAlerts,
       emergencyProfile: emergencyProfile || null,
@@ -1147,6 +1804,61 @@ app.get('/api/caregiver/portal', requireAuth, requireRole('caregiver'), (req: Au
     .all(caregiverId, cleanPhone);
 
   res.json({ linkedCitizens, notifications });
+});
+
+app.post('/api/caregiver/relationships/:id/respond', requireAuth, requireRole('caregiver'), (req: AuthenticatedRequest, res) => {
+  const action = req.body?.action === 'reject' ? 'reject' : 'accept';
+  const code = String(req.body?.verificationCode || '').trim();
+  const cleanPhone = req.authUser!.phone.replace(/\s+/g, '');
+
+  const rel = db
+    .prepare(
+      `SELECT * FROM caregiver_relationships
+       WHERE id = ? AND (caregiver_user_id = ? OR REPLACE(caregiver_phone, ' ', '') = ?)`
+    )
+    .get(req.params.id, req.authUser!.id, cleanPhone) as Record<string, unknown> | undefined;
+
+  if (!rel) return res.status(404).json({ error: 'Caregiver link request not found for your account.' });
+  const nowIso = new Date().toISOString();
+
+  if (action === 'reject') {
+    db.prepare(`UPDATE caregiver_relationships SET status = 'disconnected', updated_at = ? WHERE id = ?`).run(nowIso, String(rel.id));
+    db.prepare(`UPDATE caregiver_access_tokens SET revoked_at = ? WHERE relationship_id = ? AND revoked_at = ''`).run(nowIso, String(rel.id));
+    recordAudit(req.authUser!.id, 'caregiver', 'reject_caregiver_link', 'caregiver_relationship', String(rel.id));
+    return res.json({ ok: true, status: 'disconnected' });
+  }
+
+  if (rel.status === 'pending_verification') {
+    if (!code || !verifyPassword(code, String(rel.verification_code_hash))) {
+      return res.status(400).json({ error: 'Valid 6-digit verification code from the citizen is required to accept this request.' });
+    }
+    db.prepare(`
+      UPDATE caregiver_relationships
+      SET status = 'verified_awaiting_approval', caregiver_user_id = ?, verified_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(req.authUser!.id, nowIso, nowIso, String(rel.id));
+    recordAudit(req.authUser!.id, 'caregiver', 'accept_verify_caregiver_link', 'caregiver_relationship', String(rel.id));
+    return res.json({ ok: true, status: 'verified_awaiting_approval' });
+  }
+
+  return res.json({ ok: true, status: rel.status });
+});
+
+app.post('/api/caregiver/relationships/:id/unlink', requireAuth, requireRole('caregiver'), (req: AuthenticatedRequest, res) => {
+  const cleanPhone = req.authUser!.phone.replace(/\s+/g, '');
+  const rel = db
+    .prepare(
+      `SELECT * FROM caregiver_relationships
+       WHERE id = ? AND (caregiver_user_id = ? OR REPLACE(caregiver_phone, ' ', '') = ?)`
+    )
+    .get(req.params.id, req.authUser!.id, cleanPhone) as Record<string, unknown> | undefined;
+  if (!rel) return res.status(404).json({ error: 'Caregiver link not found.' });
+
+  const nowIso = new Date().toISOString();
+  db.prepare(`UPDATE caregiver_relationships SET status = 'disconnected', updated_at = ? WHERE id = ?`).run(nowIso, String(rel.id));
+  db.prepare(`UPDATE caregiver_access_tokens SET revoked_at = ? WHERE relationship_id = ? AND revoked_at = ''`).run(nowIso, String(rel.id));
+  recordAudit(req.authUser!.id, 'caregiver', 'caregiver_unlinked', 'caregiver_relationship', String(rel.id));
+  res.json({ ok: true });
 });
 
 app.patch('/api/caregiver/notifications/:id/read', requireAuth, requireRole('caregiver'), (req: AuthenticatedRequest, res) => {
@@ -1214,6 +1926,7 @@ app.get('/api/civic/reports', requireAuth, (req: AuthenticatedRequest, res) => {
     return {
       ...r,
       evidenceUrls: JSON.parse(String(r.evidence_urls_json || '[]')),
+      beforePhotoUrls: JSON.parse(String(r.before_photo_urls_json || '[]')),
       resolutionEvidenceUrls: JSON.parse(String(r.resolution_evidence_urls_json || '[]')),
       aiVerification: JSON.parse(String(r.ai_verification_json || '{}')),
       distanceKm: dist,
@@ -1258,20 +1971,30 @@ app.post('/api/civic/reports', requireAuth, requireRole('citizen'), (req: Authen
     return res.status(400).json({ error: 'Address or location label is required.' });
   }
 
+  const slaRule = db.prepare(`SELECT department_id, sla_hours FROM sla_rules WHERE category = ?`).get(category) as
+    | { department_id: string; sla_hours: number }
+    | undefined;
+
   const deptMap: Record<string, string> = {
+    'Potholes and damaged roads': 'dept-roads',
     Potholes: 'dept-roads',
     'Damaged roads': 'dept-roads',
     'Damaged footpaths': 'dept-roads',
+    'Garbage and waste management': 'dept-sanitation',
     'Garbage dumping': 'dept-sanitation',
     'Illegal dumping': 'dept-sanitation',
+    'Street lighting and electrical faults': 'dept-lighting',
     'Broken streetlights': 'dept-lighting',
+    'Blocked drains and waterlogging': 'dept-water',
     'Water leakage': 'dept-water',
     'Drainage blockage': 'dept-water',
     'Open manholes': 'dept-water',
+    'Traffic problems and road obstructions': 'dept-mobility',
+    'Other civic infrastructure problems': 'dept-roads',
   };
-  const departmentId = deptMap[category] || 'dept-roads';
+  const departmentId = slaRule?.department_id || deptMap[category] || 'dept-roads';
   const dept = db.prepare(`SELECT sla_hours FROM departments WHERE id = ?`).get(departmentId) as { sla_hours: number } | undefined;
-  const slaHours = dept?.sla_hours || 48;
+  const slaHours = slaRule?.sla_hours || dept?.sla_hours || 48;
 
   const id = `rep-${crypto.randomUUID().slice(0, 8)}`;
   const reportCode = `NGR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1371,9 +2094,60 @@ app.post('/api/civic/reports/:id/comment', requireAuth, (req: AuthenticatedReque
   res.json({ ok: true });
 });
 
+app.post('/api/civic/reports/:id/evidence', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const report = db.prepare(`SELECT user_id, evidence_urls_json, status FROM civic_reports WHERE id = ?`).get(req.params.id) as
+    | { user_id: string; evidence_urls_json: string; status: string }
+    | undefined;
+  if (!report) return res.status(404).json({ error: 'Complaint not found.' });
+  if (report.user_id !== req.authUser!.id) return res.status(403).json({ error: 'You may only upload evidence to your own complaint.' });
+
+  const newUrls = Array.isArray(req.body?.evidenceUrls) ? req.body.evidenceUrls.filter((u: unknown) => typeof u === 'string') : [];
+  if (newUrls.length === 0) return res.status(400).json({ error: 'No evidence files provided.' });
+
+  const current = JSON.parse(report.evidence_urls_json || '[]') as string[];
+  const merged = [...current, ...newUrls].slice(0, 8);
+  const nowIso = new Date().toISOString();
+  db.prepare(`UPDATE civic_reports SET evidence_urls_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(merged), nowIso, req.params.id);
+  db.prepare(`
+    INSERT INTO complaint_activity (id, report_id, previous_status, new_status, actor_id, actor_name, actor_role, comment, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `act-${crypto.randomUUID().slice(0, 8)}`,
+    req.params.id,
+    report.status,
+    report.status,
+    req.authUser!.id,
+    req.authUser!.name,
+    'citizen',
+    `Citizen uploaded ${newUrls.length} additional evidence attachment(s).`,
+    nowIso
+  );
+  broadcastEvent('civic_updated', { action: 'evidence_added', id: req.params.id });
+  res.json({ ok: true, evidenceUrls: merged });
+});
+
+app.post('/api/civic/reports/:id/feedback', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const report = db.prepare(`SELECT user_id, status FROM civic_reports WHERE id = ?`).get(req.params.id) as
+    | { user_id: string; status: string }
+    | undefined;
+  if (!report) return res.status(404).json({ error: 'Complaint not found.' });
+  if (report.user_id !== req.authUser!.id) return res.status(403).json({ error: 'Only the complaint owner can rate resolution.' });
+
+  const rating = Math.max(1, Math.min(5, Number(req.body?.rating) || 5));
+  const feedback = String(req.body?.feedback || '').trim();
+  const nowIso = new Date().toISOString();
+  db.prepare(`UPDATE civic_reports SET citizen_rating = ?, resolution_feedback = ?, updated_at = ? WHERE id = ?`).run(
+    rating,
+    feedback,
+    nowIso,
+    req.params.id
+  );
+  res.json({ ok: true, rating });
+});
+
 app.patch('/api/civic/reports/:id/manage', requireAuth, requireRole('authority', 'admin'), (req: AuthenticatedRequest, res) => {
   const reportId = req.params.id;
-  const { status, officerId, departmentId, severity, comment, resolutionEvidenceUrls } = req.body || {};
+  const { status, officerId, departmentId, severity, comment, resolutionNotes, beforePhotoUrls, resolutionEvidenceUrls } = req.body || {};
 
   const report = db.prepare(`SELECT * FROM civic_reports WHERE id = ?`).get(reportId) as Record<string, unknown> | undefined;
   if (!report) return res.status(404).json({ error: 'Complaint not found.' });
@@ -1387,14 +2161,56 @@ app.patch('/api/civic/reports/:id/manage', requireAuth, requireRole('authority',
   const nextOfficer = officerId !== undefined ? officerId : report.officer_id;
   const nextDept = departmentId || report.department_id;
   const nextSev = ['low', 'medium', 'high', 'critical'].includes(severity) ? severity : String(report.severity);
-  const nextResEv = Array.isArray(resolutionEvidenceUrls) ? JSON.stringify(resolutionEvidenceUrls) : String(report.resolution_evidence_urls_json);
+  const nextBeforeEv = Array.isArray(beforePhotoUrls) ? JSON.stringify(beforePhotoUrls) : String(report.before_photo_urls_json || '[]');
+  const nextResEv = Array.isArray(resolutionEvidenceUrls) ? JSON.stringify(resolutionEvidenceUrls) : String(report.resolution_evidence_urls_json || '[]');
+  const nextResNotes = resolutionNotes !== undefined ? String(resolutionNotes) : String(report.resolution_notes || '');
   const nowIso = new Date().toISOString();
+  const resolvedAt = nextStatus === 'Resolved' ? String(report.resolved_at || nowIso) : String(report.resolved_at || '');
+  const escalatedAt = nextStatus === 'Escalated' ? String(report.escalated_at || nowIso) : String(report.escalated_at || '');
 
   db.prepare(`
     UPDATE civic_reports
-    SET status = ?, officer_id = ?, department_id = ?, severity = ?, resolution_evidence_urls_json = ?, updated_at = ?
+    SET status = ?, officer_id = ?, department_id = ?, severity = ?,
+        before_photo_urls_json = ?, resolution_evidence_urls_json = ?, resolution_notes = ?,
+        resolved_at = ?, escalated_at = ?, updated_at = ?
     WHERE id = ?
-  `).run(nextStatus, nextOfficer, nextDept, nextSev, nextResEv, nowIso, reportId);
+  `).run(nextStatus, nextOfficer, nextDept, nextSev, nextBeforeEv, nextResEv, nextResNotes, resolvedAt, escalatedAt, nowIso, reportId);
+
+  // Sync officer active/resolved counters
+  if (nextOfficer && nextOfficer !== report.officer_id) {
+    db.prepare(`UPDATE officers SET active_count = active_count + 1 WHERE id = ?`).run(String(nextOfficer));
+  }
+  if (nextStatus === 'Resolved' && report.status !== 'Resolved' && nextOfficer) {
+    db.prepare(`UPDATE officers SET resolved_count = resolved_count + 1, active_count = MAX(0, active_count - 1) WHERE id = ?`).run(String(nextOfficer));
+  }
+
+  // Award verified citizen points (idempotent per milestone, never on Rejected)
+  const rewardCfg = getAppConfigJson('reward_config', {
+    verifiedReportPoints: 20,
+    resolutionConfirmedPoints: 30,
+    segregationPoints: 25,
+    maxDailyClaims: 10,
+  });
+  let awardedPoints = 0;
+  if (nextStatus === 'Verified') {
+    const awarded = awardCitizenRewardPoints({
+      userId: String(report.user_id),
+      action: `Verified Civic Report (${report.report_code})`,
+      points: rewardCfg.verifiedReportPoints,
+      refId: `verify:${reportId}`,
+      badge: 'Verified Contributor',
+    });
+    if (awarded) awardedPoints += rewardCfg.verifiedReportPoints;
+  } else if (nextStatus === 'Resolved') {
+    const awarded = awardCitizenRewardPoints({
+      userId: String(report.user_id),
+      action: `Resolved Civic Report (${report.report_code})`,
+      points: rewardCfg.resolutionConfirmedPoints,
+      refId: `resolve:${reportId}`,
+      badge: 'Resolution Partner',
+    });
+    if (awarded) awardedPoints += rewardCfg.resolutionConfirmedPoints;
+  }
 
   db.prepare(`
     INSERT INTO complaint_activity (id, report_id, previous_status, new_status, actor_id, actor_name, actor_role, comment, created_at)
@@ -1407,7 +2223,7 @@ app.patch('/api/civic/reports/:id/manage', requireAuth, requireRole('authority',
     req.authUser!.id,
     req.authUser!.name,
     req.authUser!.role,
-    String(comment || `Status updated to ${nextStatus}.`),
+    String(comment || nextResNotes || `Status updated to ${nextStatus}.`),
     nowIso
   );
 
@@ -1418,21 +2234,23 @@ app.patch('/api/civic/reports/:id/manage', requireAuth, requireRole('authority',
     `not-${crypto.randomUUID().slice(0, 8)}`,
     String(report.user_id),
     `Complaint ${report.report_code} → ${nextStatus}`,
-    comment ? String(comment) : `Your complaint status has changed to ${nextStatus}.`,
+    comment
+      ? `${comment}${awardedPoints > 0 ? ` (+${awardedPoints} reward points)` : ''}`
+      : `Your complaint status has changed to ${nextStatus}.${awardedPoints > 0 ? ` (+${awardedPoints} reward points)` : ''}`,
     `आपकी शिकायत (${report.report_code}) की स्थिति बदलकर ${nextStatus} हो गई है।`,
     reportId,
     nowIso
   );
 
-  recordAudit(req.authUser!.id, req.authUser!.role, 'manage_civic_report', 'civic_report', reportId, { nextStatus, nextOfficer });
+  recordAudit(req.authUser!.id, req.authUser!.role, 'manage_civic_report', 'civic_report', reportId, { nextStatus, nextOfficer, awardedPoints });
   broadcastEvent('civic_updated', { action: 'managed', id: reportId, status: nextStatus });
 
-  res.json({ ok: true, status: nextStatus });
+  res.json({ ok: true, status: nextStatus, awardedPoints });
 });
 
 app.get('/api/civic/departments', requireAuth, (_req, res) => {
   res.json({
-    departments: db.prepare(`SELECT * FROM departments ORDER BY name ASC`).all(),
+    departments: db.prepare(`SELECT * FROM departments WHERE COALESCE(is_active, 1) = 1 ORDER BY name ASC`).all(),
     officers: db
       .prepare(`SELECT o.*, d.name as department_name FROM officers o JOIN departments d ON o.department_id = d.id ORDER BY o.name ASC`)
       .all(),
@@ -1840,11 +2658,710 @@ app.post('/api/uploads/evidence', requireAuth, uploadEvidence.single('file'), (r
 });
 
 // ============================================================================
+// AUTHORITY GRIEVANCES (SEPARATE COMPLAINT BOX FOR OFFICER / DEPT GRIEVANCES)
+// ============================================================================
+app.get('/api/grievances', requireAuth, (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  let rows: Array<Record<string, unknown>> = [];
+
+  if (user.role === 'citizen') {
+    rows = db
+      .prepare(
+        `SELECT g.*, d.name as department_name
+         FROM authority_grievances g LEFT JOIN departments d ON g.target_department_id = d.id
+         WHERE g.citizen_id = ? ORDER BY g.created_at DESC`
+      )
+      .all(user.id) as typeof rows;
+  } else if (user.role === 'admin') {
+    rows = db
+      .prepare(
+        `SELECT g.*, u.name as citizen_name, u.email as citizen_email, d.name as department_name
+         FROM authority_grievances g
+         JOIN users u ON g.citizen_id = u.id
+         LEFT JOIN departments d ON g.target_department_id = d.id
+         ORDER BY g.created_at DESC`
+      )
+      .all() as typeof rows;
+  } else if (user.role === 'authority') {
+    // Authority portal supervisory grievance log shows redacted supervisory summary for their department only
+    rows = db
+      .prepare(
+        `SELECT g.id, g.grievance_code, g.category, g.related_report_code, g.target_department_id, g.title, g.status, g.resolution_notes, g.created_at, g.updated_at, d.name as department_name
+         FROM authority_grievances g
+         LEFT JOIN departments d ON g.target_department_id = d.id
+         WHERE (? = '' OR g.target_department_id = ?)
+         ORDER BY g.created_at DESC`
+      )
+      .all(user.departmentId, user.departmentId) as typeof rows;
+  }
+
+  res.json({
+    grievances: rows.map((r) => ({
+      ...r,
+      evidenceUrls: JSON.parse(String(r.evidence_urls_json || '[]')),
+      resolutionEvidenceUrls: JSON.parse(String(r.resolution_evidence_urls_json || '[]')),
+    })),
+  });
+});
+
+app.post('/api/grievances', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const category = String(req.body?.category || 'Service Delay / Negligence').trim();
+  const title = String(req.body?.title || '').trim();
+  const description = String(req.body?.description || '').trim();
+  const relatedReportCode = String(req.body?.relatedReportCode || '').trim().toUpperCase();
+  const targetDepartmentId = String(req.body?.targetDepartmentId || '').trim();
+  const targetOfficerName = String(req.body?.targetOfficerName || '').trim();
+  const evidenceUrls = Array.isArray(req.body?.evidenceUrls) ? req.body.evidenceUrls.slice(0, 4) : [];
+
+  if (!title || !description) {
+    return res.status(400).json({ error: 'Grievance subject title and description are required.' });
+  }
+
+  const id = `grv-${crypto.randomUUID().slice(0, 8)}`;
+  const grievanceCode = `GRV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const nowIso = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO authority_grievances (
+      id, grievance_code, citizen_id, category, related_report_code, target_department_id, target_officer_name,
+      title, description, evidence_urls_json, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Submitted', ?, ?)
+  `).run(
+    id,
+    grievanceCode,
+    req.authUser!.id,
+    category,
+    relatedReportCode,
+    targetDepartmentId,
+    targetOfficerName,
+    title,
+    description,
+    JSON.stringify(evidenceUrls),
+    nowIso,
+    nowIso
+  );
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'grievance_submitted', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    req.authUser!.id,
+    `Authority Grievance ${grievanceCode} Filed`,
+    `Your supervisory grievance "${title}" has been escalated to the Administration Portal.`,
+    `आपकी शिकायत (${grievanceCode}) प्रशासन पोर्टल में दर्ज की गई है।`,
+    id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, 'citizen', 'create_authority_grievance', 'authority_grievance', id, { grievanceCode });
+  broadcastEvent('grievance_updated', { action: 'created', id, grievanceCode });
+  res.status(201).json({ id, grievanceCode, status: 'Submitted' });
+});
+
+app.patch('/api/grievances/:id', requireAuth, requireRole('admin'), (req: AuthenticatedRequest, res) => {
+  const row = db.prepare(`SELECT * FROM authority_grievances WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: 'Grievance not found.' });
+
+  const allowed = ['Submitted', 'Under Review', 'Investigating', 'Resolved', 'Dismissed'];
+  const status = allowed.includes(req.body?.status) ? req.body.status : String(row.status);
+  const resolutionNotes = req.body?.resolutionNotes !== undefined ? String(req.body.resolutionNotes) : String(row.resolution_notes || '');
+  const resolutionEvidenceUrls = Array.isArray(req.body?.resolutionEvidenceUrls)
+    ? JSON.stringify(req.body.resolutionEvidenceUrls)
+    : String(row.resolution_evidence_urls_json || '[]');
+  const nowIso = new Date().toISOString();
+  const resolvedAt = status === 'Resolved' || status === 'Dismissed' ? nowIso : String(row.resolved_at || '');
+
+  db.prepare(`
+    UPDATE authority_grievances
+    SET status = ?, assigned_admin_id = ?, resolution_notes = ?, resolution_evidence_urls_json = ?, updated_at = ?, resolved_at = ?
+    WHERE id = ?
+  `).run(status, req.authUser!.id, resolutionNotes, resolutionEvidenceUrls, nowIso, resolvedAt, req.params.id);
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'grievance_updated', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    String(row.citizen_id),
+    `Grievance ${row.grievance_code} → ${status}`,
+    resolutionNotes || `Administration updated your grievance status to ${status}.`,
+    `आपकी प्रशासनिक शिकायत (${row.grievance_code}) की स्थिति अब ${status} है।`,
+    req.params.id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, 'admin', 'update_authority_grievance', 'authority_grievance', req.params.id, { status });
+  broadcastEvent('grievance_updated', { action: 'updated', id: req.params.id, status });
+  res.json({ ok: true, status });
+});
+
+// ============================================================================
+// CITIZEN MEDICAL ASSISTANCE <-> OFFICER MEDICAL HELP <-> ADMIN MONITOR
+// ============================================================================
+app.get('/api/medical/requests', requireAuth, (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  if (user.role === 'citizen') {
+    const rows = db
+      .prepare(`SELECT * FROM medical_requests WHERE citizen_id = ? ORDER BY created_at DESC`)
+      .all(user.id);
+    return res.json({ requests: rows });
+  }
+  if (user.role === 'authority' || user.role === 'admin') {
+    const rows = db
+      .prepare(
+        `SELECT m.*, u.name as citizen_name, u.phone as citizen_phone, cp.blood_group, cp.medical_notes
+         FROM medical_requests m
+         JOIN users u ON m.citizen_id = u.id
+         LEFT JOIN citizen_profiles cp ON m.citizen_id = cp.user_id
+         ORDER BY CASE m.urgency WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, m.created_at DESC`
+      )
+      .all();
+    return res.json({ requests: rows });
+  }
+  return res.status(403).json({ error: 'Access denied.' });
+});
+
+app.post('/api/medical/requests', requireAuth, requireRole('citizen'), (req: AuthenticatedRequest, res) => {
+  const requestType = String(req.body?.requestType || 'Medical Assistance').trim();
+  const urgency = ['normal', 'urgent', 'critical'].includes(req.body?.urgency) ? req.body.urgency : 'urgent';
+  const description = String(req.body?.description || '').trim();
+  const lat = Number(req.body?.lat);
+  const lng = Number(req.body?.lng);
+  const accuracyM = Number.isFinite(Number(req.body?.accuracyM)) ? Number(req.body.accuracyM) : null;
+  const address = String(req.body?.address || '').trim();
+  const selectedFacilityName = String(req.body?.selectedFacilityName || '').trim();
+  const selectedFacilityPhone = String(req.body?.selectedFacilityPhone || '').trim();
+  const selectedFacilityAddress = String(req.body?.selectedFacilityAddress || '').trim();
+  const linkedSosId = String(req.body?.linkedSosId || '').trim();
+
+  if (!description || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'Medical description and valid GPS/map coordinates are required.' });
+  }
+
+  const id = `med-${crypto.randomUUID().slice(0, 8)}`;
+  const requestCode = `MED-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const nowIso = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO medical_requests (
+      id, request_code, citizen_id, request_type, urgency, description,
+      lat, lng, accuracy_m, address, selected_facility_name, selected_facility_phone,
+      selected_facility_address, status, linked_sos_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Submitted', ?, ?, ?)
+  `).run(
+    id,
+    requestCode,
+    req.authUser!.id,
+    requestType,
+    urgency,
+    description,
+    lat,
+    lng,
+    accuracyM,
+    address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+    selectedFacilityName,
+    selectedFacilityPhone,
+    selectedFacilityAddress,
+    linkedSosId,
+    nowIso,
+    nowIso
+  );
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'medical_request_submitted', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    req.authUser!.id,
+    `Medical Request ${requestCode} Submitted`,
+    `Your ${urgency} medical help request (${requestType}) was sent to the Authority Medical Help desk.`,
+    `आपका मेडिकल सहायता अनुरोध (${requestCode}) अधिकारी मेडिकल डेस्क को भेज दिया गया है।`,
+    id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, 'citizen', 'create_medical_request', 'medical_request', id, { requestCode, urgency });
+  broadcastEvent('medical_updated', { action: 'created', id, requestCode });
+  const created = db.prepare(`SELECT * FROM medical_requests WHERE id = ?`).get(id);
+  res.status(201).json({ request: created });
+});
+
+app.patch('/api/medical/requests/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const row = db.prepare(`SELECT * FROM medical_requests WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: 'Medical request not found.' });
+
+  const nowIso = new Date().toISOString();
+  if (req.authUser!.role === 'citizen') {
+    if (row.citizen_id !== req.authUser!.id) return res.status(403).json({ error: 'Access denied.' });
+    if (req.body?.status !== 'Cancelled') return res.status(403).json({ error: 'Citizens can only cancel their medical request.' });
+    db.prepare(`UPDATE medical_requests SET status = 'Cancelled', updated_at = ? WHERE id = ?`).run(nowIso, req.params.id);
+    broadcastEvent('medical_updated', { action: 'cancelled', id: req.params.id });
+    return res.json({ ok: true, status: 'Cancelled' });
+  }
+
+  if (!['authority', 'admin'].includes(req.authUser!.role)) {
+    return res.status(403).json({ error: 'Unauthorized role.' });
+  }
+
+  const allowed = ['Submitted', 'Acknowledged', 'Dispatched', 'Coordinated', 'Resolved', 'Cancelled'];
+  const status = allowed.includes(req.body?.status) ? req.body.status : String(row.status);
+  const responderNotes = req.body?.responderNotes !== undefined ? String(req.body.responderNotes) : String(row.responder_notes || '');
+  const assignedOfficerId = req.body?.assignedOfficerId || req.authUser!.id;
+  const assignedOfficerName = req.body?.assignedOfficerName || req.authUser!.name;
+  const resolvedAt = status === 'Resolved' ? nowIso : String(row.resolved_at || '');
+
+  db.prepare(`
+    UPDATE medical_requests
+    SET status = ?, assigned_officer_id = ?, assigned_officer_name = ?, responder_notes = ?, updated_at = ?, resolved_at = ?
+    WHERE id = ?
+  `).run(status, assignedOfficerId, assignedOfficerName, responderNotes, nowIso, resolvedAt, req.params.id);
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'medical_request_updated', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    String(row.citizen_id),
+    `Medical Request ${row.request_code} → ${status}`,
+    responderNotes ? `${responderNotes} (Updated by ${assignedOfficerName})` : `Status updated to ${status} by ${assignedOfficerName}.`,
+    `आपका मेडिकल सहायता अनुरोध (${row.request_code}) अब ${status} है।`,
+    req.params.id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, req.authUser!.role, 'update_medical_request', 'medical_request', req.params.id, { status });
+  broadcastEvent('medical_updated', { action: 'updated', id: req.params.id, status });
+  res.json({ ok: true, status });
+});
+
+// ============================================================================
+// SMART MOBILITY (REAL NOMINATIM + OSRM ROUTING + NEARBY TRANSIT HUBS)
+// ============================================================================
+app.get('/api/mobility/search', requireAuth, rateLimit(35, 60_000), async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const lat = Number.isFinite(Number(req.query.lat)) ? Number(req.query.lat) : undefined;
+  const lng = Number.isFinite(Number(req.query.lng)) ? Number(req.query.lng) : undefined;
+  const result = await searchMobilityDestination(q, lat, lng);
+  res.json(result);
+});
+
+app.get('/api/mobility/route', requireAuth, rateLimit(35, 60_000), async (req, res) => {
+  const originLat = Number(req.query.originLat);
+  const originLng = Number(req.query.originLng);
+  const destLat = Number(req.query.destLat);
+  const destLng = Number(req.query.destLng);
+  const mode = String(req.query.mode || 'driving') as MobilityMode;
+
+  if (![originLat, originLng, destLat, destLng].every((v) => Number.isFinite(v))) {
+    return res.status(400).json({ error: 'Valid origin and destination coordinates are required for route computation.' });
+  }
+  try {
+    const route = await computeRealRoute({ originLat, originLng, destLat, destLng, mode });
+    res.json({ route });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : 'Unable to compute real road route.' });
+  }
+});
+
+app.get('/api/mobility/nearby', requireAuth, rateLimit(25, 60_000), async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const radiusKm = Number(req.query.radiusKm) || 5;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'Current GPS latitude and longitude required to discover nearby transport hubs.' });
+  }
+  const result = await fetchNearbyMobilityHubs(lat, lng, radiusKm);
+  res.json(result);
+});
+
+// ============================================================================
+// CITIZEN REWARDS & ACHIEVEMENTS (100% DB VERIFIED ACTIONS ONLY)
+// ============================================================================
+app.get('/api/rewards/overview', requireAuth, (req: AuthenticatedRequest, res) => {
+  const userId = req.authUser!.id;
+  const row = db.prepare(`SELECT * FROM rewards WHERE user_id = ?`).get(userId) as Record<string, unknown> | undefined;
+  const verifiedReports = (
+    db.prepare(`SELECT COUNT(*) as c FROM civic_reports WHERE user_id = ? AND status IN ('Verified', 'Assigned', 'In Progress', 'Resolved')`).get(userId) as { c: number }
+  ).c;
+  const resolvedReports = (
+    db.prepare(`SELECT COUNT(*) as c FROM civic_reports WHERE user_id = ? AND status = 'Resolved'`).get(userId) as { c: number }
+  ).c;
+  const leaderboard = (db
+    .prepare(
+      `SELECT r.points, r.streak_days, r.badges_json, u.name, u.id as user_id
+       FROM rewards r JOIN users u ON r.user_id = u.id
+       WHERE u.account_status = 'active' AND u.role = 'citizen'
+       ORDER BY r.points DESC LIMIT 15`
+    )
+    .all() as Array<Record<string, unknown>>)
+    .map((item) => ({
+      ...item,
+      badges: JSON.parse(String(item.badges_json || '[]')),
+      isCurrentUser: item.user_id === userId,
+    }));
+
+  const points = Number(row?.points || 0);
+  const rewardConfig = getAppConfigJson('reward_config', {
+    verifiedReportPoints: 20,
+    resolutionConfirmedPoints: 30,
+    segregationPoints: 25,
+    maxDailyClaims: 10,
+  });
+
+  res.json({
+    points,
+    streakDays: Number(row?.streak_days || 0),
+    householdsVerified: Number(row?.households_verified || 0),
+    badges: row ? JSON.parse(String(row.badges_json || '[]')) : [],
+    history: row ? JSON.parse(String(row.history_json || '[]')) : [],
+    verifiedReportsCount: verifiedReports,
+    resolvedReportsCount: resolvedReports,
+    nextTierPoints: points < 100 ? 100 : points < 250 ? 250 : points < 500 ? 500 : 1000,
+    rewardConfig,
+    leaderboard,
+  });
+});
+
+// ============================================================================
+// AUTHORITY / OFFICER PORTAL 15-MODULE ENDPOINTS
+// ============================================================================
+app.get('/api/authority/overview', requireAuth, requireRole('authority', 'admin'), (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const isDeptScoped = user.role === 'authority' && Boolean(user.departmentId);
+  const reports = (
+    isDeptScoped
+      ? db.prepare(`SELECT * FROM civic_reports WHERE department_id = ? ORDER BY created_at DESC`).all(user.departmentId)
+      : db.prepare(`SELECT * FROM civic_reports ORDER BY created_at DESC`).all()
+  ) as Array<Record<string, unknown>>;
+
+  const now = new Date();
+  const pendingCount = reports.filter((r) => ['Submitted', 'Under Review'].includes(String(r.status))).length;
+  const verifiedCount = reports.filter((r) => r.status === 'Verified').length;
+  const assignedInProgressCount = reports.filter((r) => ['Assigned', 'In Progress', 'Reopened'].includes(String(r.status))).length;
+  const resolvedCount = reports.filter((r) => r.status === 'Resolved').length;
+  const rejectedCount = reports.filter((r) => r.status === 'Rejected').length;
+  const overdueCount = reports.filter(
+    (r) => !['Resolved', 'Rejected'].includes(String(r.status)) && new Date(String(r.sla_deadline)) < now
+  ).length;
+  const escalatedCount = reports.filter((r) => r.status === 'Escalated').length;
+
+  const activeSosCount = (db.prepare(`SELECT COUNT(*) as c FROM sos_incidents WHERE status IN ('active', 'acknowledged')`).get() as { c: number }).c;
+  const activeMedicalCount = (db.prepare(`SELECT COUNT(*) as c FROM medical_requests WHERE status NOT IN ('Resolved', 'Cancelled')`).get() as { c: number }).c;
+
+  const recentActivity = db
+    .prepare(
+      `SELECT ca.*, cr.report_code, cr.title as report_title
+       FROM complaint_activity ca JOIN civic_reports cr ON ca.report_id = cr.id
+       ORDER BY ca.created_at DESC LIMIT 25`
+    )
+    .all();
+
+  const recentEmergencies = db
+    .prepare(
+      `SELECT s.*, u.name as citizen_name, u.phone as citizen_phone
+       FROM sos_incidents s JOIN users u ON s.citizen_id = u.id
+       WHERE s.status IN ('active', 'acknowledged')
+       ORDER BY s.created_at DESC LIMIT 10`
+    )
+    .all();
+
+  res.json({
+    metrics: {
+      totalReports: reports.length,
+      pendingCount,
+      verifiedCount,
+      assignedInProgressCount,
+      resolvedCount,
+      rejectedCount,
+      overdueCount,
+      escalatedCount,
+      activeSosCount,
+      activeMedicalCount,
+    },
+    recentActivity,
+    recentEmergencies,
+  });
+});
+
+app.post('/api/ai/civic/verify-report/:id', requireAuth, requireRole('authority', 'admin'), async (req, res) => {
+  const report = db.prepare(`SELECT * FROM civic_reports WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!report) return res.status(404).json({ error: 'Complaint not found.' });
+
+  try {
+    const evidenceUrls = JSON.parse(String(report.evidence_urls_json || '[]')) as string[];
+    const firstImg = evidenceUrls.find((u) => u.startsWith('data:image/'));
+    let imageBase64: string | undefined;
+    let imageMimeType: string | undefined;
+    if (firstImg) {
+      const m = firstImg.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (m) {
+        imageMimeType = m[1];
+        imageBase64 = m[2];
+      }
+    }
+
+    const analysis = await analyzeCivicSubmission({
+      category: String(report.category),
+      title: String(report.title),
+      description: String(report.description),
+      lat: Number(report.lat),
+      lng: Number(report.lng),
+      imageBase64,
+      imageMimeType,
+    });
+
+    db.prepare(`UPDATE civic_reports SET ai_verification_json = ?, updated_at = ? WHERE id = ?`).run(
+      JSON.stringify(analysis),
+      new Date().toISOString(),
+      req.params.id
+    );
+
+    res.json({ ok: true, aiVerification: analysis });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'AI verification failed.';
+    res.status(msg === 'GEMINI_NOT_CONFIGURED' ? 503 : 500).json({ error: msg });
+  }
+});
+
+app.get('/api/authority/sos', requireAuth, requireRole('authority', 'admin'), (_req, res) => {
+  const incidents = (db
+    .prepare(
+      `SELECT s.*, u.name as citizen_name, u.phone as citizen_phone, cp.blood_group, cp.medical_notes
+       FROM sos_incidents s
+       JOIN users u ON s.citizen_id = u.id
+       LEFT JOIN citizen_profiles cp ON s.citizen_id = cp.user_id
+       ORDER BY CASE s.status WHEN 'active' THEN 1 WHEN 'acknowledged' THEN 2 ELSE 3 END, s.created_at DESC`
+    )
+    .all() as Array<Record<string, unknown>>)
+    .map((inc) => {
+      const caregivers = db
+        .prepare(
+          `SELECT caregiver_name, caregiver_phone, status
+           FROM caregiver_relationships WHERE citizen_id = ? AND status = 'active' AND COALESCE(can_receive_sos, 1) = 1`
+        )
+        .all(String(inc.citizen_id));
+      return { ...inc, caregivers };
+    });
+
+  res.json({ incidents });
+});
+
+app.patch('/api/authority/sos/:id', requireAuth, requireRole('authority', 'admin'), async (req: AuthenticatedRequest, res) => {
+  const row = db.prepare(`SELECT * FROM sos_incidents WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: 'SOS incident not found.' });
+
+  const status = ['active', 'acknowledged', 'resolved', 'cancelled'].includes(req.body?.status) ? req.body.status : String(row.status);
+  const responseNotes = req.body?.responseNotes !== undefined ? String(req.body.responseNotes) : String(row.response_notes || '');
+  const assignedOfficerId = req.body?.assignedOfficerId || req.authUser!.id;
+  const assignedOfficerName = req.body?.assignedOfficerName || req.authUser!.name;
+  const nowIso = new Date().toISOString();
+  const resolvedAt = status === 'resolved' || status === 'cancelled' ? nowIso : String(row.resolved_at || '');
+
+  db.prepare(`
+    UPDATE sos_incidents
+    SET status = ?, acknowledged_by = ?, assigned_officer_id = ?, assigned_officer_name = ?, response_notes = ?, updated_at = ?, resolved_at = ?
+    WHERE id = ?
+  `).run(status, req.authUser!.name, assignedOfficerId, assignedOfficerName, responseNotes, nowIso, resolvedAt, req.params.id);
+
+  await notifyLinkedCaregivers({
+    citizenId: String(row.citizen_id),
+    eventType: 'emergency_updated',
+    title: `Authority Update on SOS ${row.incident_code}`,
+    message: `Status: ${status.toUpperCase()}. Responder: ${assignedOfficerName}. ${responseNotes}`,
+    sosIncidentId: req.params.id,
+  });
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'sos_authority_update', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    String(row.citizen_id),
+    `SOS ${row.incident_code} → ${status.toUpperCase()}`,
+    `Responder ${assignedOfficerName} updated SOS status to ${status}. ${responseNotes}`,
+    `आपके SOS अलर्ट (${row.incident_code}) पर अधिकारी ${assignedOfficerName} ने स्थिति ${status} अपडेट की है।`,
+    req.params.id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, req.authUser!.role, 'authority_update_sos', 'sos_incident', req.params.id, { status });
+  broadcastEvent('safety_updated', { citizenId: row.citizen_id, sosId: req.params.id });
+  res.json({ ok: true, status });
+});
+
+app.get('/api/authority/medical', requireAuth, requireRole('authority', 'admin'), (_req, res) => {
+  const requests = db
+    .prepare(
+      `SELECT m.*, u.name as citizen_name, u.phone as citizen_phone, cp.blood_group, cp.medical_notes
+       FROM medical_requests m
+       JOIN users u ON m.citizen_id = u.id
+       LEFT JOIN citizen_profiles cp ON m.citizen_id = cp.user_id
+       ORDER BY CASE m.urgency WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, m.created_at DESC`
+    )
+    .all();
+  res.json({ requests });
+});
+
+app.patch('/api/authority/medical/:id', requireAuth, requireRole('authority', 'admin'), (req: AuthenticatedRequest, res) => {
+  const row = db.prepare(`SELECT * FROM medical_requests WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: 'Medical request not found.' });
+
+  const allowed = ['Submitted', 'Acknowledged', 'Dispatched', 'Coordinated', 'Resolved', 'Cancelled'];
+  const status = allowed.includes(req.body?.status) ? req.body.status : String(row.status);
+  const responderNotes = req.body?.responderNotes !== undefined ? String(req.body.responderNotes) : String(row.responder_notes || '');
+  const assignedOfficerId = req.body?.assignedOfficerId || req.authUser!.id;
+  const assignedOfficerName = req.body?.assignedOfficerName || req.authUser!.name;
+  const nowIso = new Date().toISOString();
+  const resolvedAt = status === 'Resolved' ? nowIso : String(row.resolved_at || '');
+
+  db.prepare(`
+    UPDATE medical_requests
+    SET status = ?, assigned_officer_id = ?, assigned_officer_name = ?, responder_notes = ?, updated_at = ?, resolved_at = ?
+    WHERE id = ?
+  `).run(status, assignedOfficerId, assignedOfficerName, responderNotes, nowIso, resolvedAt, req.params.id);
+
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+    VALUES (?, ?, 'citizen', 'medical_request_updated', ?, ?, ?, ?, 0, ?)
+  `).run(
+    `not-${crypto.randomUUID().slice(0, 8)}`,
+    String(row.citizen_id),
+    `Medical Help ${row.request_code} → ${status}`,
+    responderNotes ? `${responderNotes} (${assignedOfficerName})` : `Status updated to ${status} by ${assignedOfficerName}.`,
+    `आपका मेडिकल सहायता अनुरोध (${row.request_code}) अब ${status} है।`,
+    req.params.id,
+    nowIso
+  );
+
+  recordAudit(req.authUser!.id, req.authUser!.role, 'authority_update_medical', 'medical_request', req.params.id, { status });
+  broadcastEvent('medical_updated', { action: 'updated', id: req.params.id, status });
+  res.json({ ok: true, status });
+});
+
+app.get('/api/authority/performance', requireAuth, requireRole('authority', 'admin'), (_req, res) => {
+  const departments = db.prepare(`SELECT * FROM departments ORDER BY name ASC`).all() as Array<Record<string, unknown>>;
+  const reports = db.prepare(`SELECT department_id, officer_id, status, sla_deadline, created_at, resolved_at FROM civic_reports`).all() as Array<
+    Record<string, unknown>
+  >;
+  const officers = db
+    .prepare(`SELECT o.*, d.name as department_name FROM officers o JOIN departments d ON o.department_id = d.id ORDER BY o.name ASC`)
+    .all() as Array<Record<string, unknown>>;
+
+  const now = new Date();
+  const departmentMetrics = departments.map((d) => {
+    const deptReports = reports.filter((r) => r.department_id === d.id);
+    const resolved = deptReports.filter((r) => r.status === 'Resolved');
+    const overdue = deptReports.filter((r) => !['Resolved', 'Rejected'].includes(String(r.status)) && new Date(String(r.sla_deadline)) < now).length;
+    const avgResolutionHours =
+      resolved.length > 0
+        ? Math.round(
+            (resolved.reduce((sum, r) => {
+              const end = r.resolved_at ? new Date(String(r.resolved_at)).getTime() : now.getTime();
+              return sum + Math.max(0.5, (end - new Date(String(r.created_at)).getTime()) / 3600_000);
+            }, 0) /
+              resolved.length) *
+              10
+          ) / 10
+        : 0;
+    return {
+      ...d,
+      totalAssigned: deptReports.length,
+      resolvedCount: resolved.length,
+      pendingCount: deptReports.length - resolved.length - deptReports.filter((r) => r.status === 'Rejected').length,
+      overdueCount: overdue,
+      resolutionRatePct: deptReports.length ? Math.round((resolved.length / deptReports.length) * 100) : 0,
+      avgResolutionHours,
+    };
+  });
+
+  const officerLeaderboard = officers
+    .map((o) => {
+      const assigned = reports.filter((r) => r.officer_id === o.id);
+      const resolved = assigned.filter((r) => r.status === 'Resolved');
+      const overdue = assigned.filter((r) => !['Resolved', 'Rejected'].includes(String(r.status)) && new Date(String(r.sla_deadline)) < now).length;
+      const score = resolved.length * 25 + assigned.length * 5 - overdue * 10;
+      return {
+        ...o,
+        assignedTotal: assigned.length,
+        resolvedTotal: resolved.length,
+        overdueTotal: overdue,
+        slaCompliancePct: assigned.length ? Math.round(((assigned.length - overdue) / assigned.length) * 100) : 100,
+        performanceScore: Math.max(0, score),
+      };
+    })
+    .sort((a, b) => b.performanceScore - a.performanceScore);
+
+  res.json({ departmentMetrics, officerLeaderboard });
+});
+
+app.get('/api/authority/escalations', requireAuth, requireRole('authority', 'admin'), (_req, res) => {
+  const nowIso = new Date().toISOString();
+  const overdueOrEscalated = db
+    .prepare(
+      `SELECT r.*, d.name as department_name, o.name as officer_name
+       FROM civic_reports r
+       LEFT JOIN departments d ON r.department_id = d.id
+       LEFT JOIN officers o ON r.officer_id = o.id
+       WHERE r.status NOT IN ('Resolved', 'Rejected') AND (r.status = 'Escalated' OR r.sla_deadline < ?)
+       ORDER BY r.sla_deadline ASC`
+    )
+    .all(nowIso);
+  res.json({ escalations: overdueOrEscalated });
+});
+
+app.post('/api/authority/escalations/scan', requireAuth, requireRole('authority', 'admin'), (req: AuthenticatedRequest, res) => {
+  const nowIso = new Date().toISOString();
+  const overdueRows = db
+    .prepare(
+      `SELECT id, report_code, user_id, status FROM civic_reports
+       WHERE status NOT IN ('Resolved', 'Rejected', 'Escalated') AND sla_deadline < ?`
+    )
+    .all(nowIso) as Array<{ id: string; report_code: string; user_id: string; status: string }>;
+
+  for (const r of overdueRows) {
+    db.prepare(`UPDATE civic_reports SET status = 'Escalated', escalated_at = ?, updated_at = ? WHERE id = ?`).run(nowIso, nowIso, r.id);
+    db.prepare(`
+      INSERT INTO complaint_activity (id, report_id, previous_status, new_status, actor_id, actor_name, actor_role, comment, created_at)
+      VALUES (?, ?, ?, 'Escalated', ?, ?, ?, 'SLA deadline elapsed — automatically escalated for priority supervisory action.', ?)
+    `).run(`act-${crypto.randomUUID().slice(0, 8)}`, r.id, r.status, req.authUser!.id, req.authUser!.name, req.authUser!.role, nowIso);
+    db.prepare(`
+      INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+      VALUES (?, ?, 'citizen', 'sla_escalated', ?, ?, ?, ?, 0, ?)
+    `).run(
+      `not-${crypto.randomUUID().slice(0, 8)}`,
+      r.user_id,
+      `Report ${r.report_code} Escalated`,
+      `Your complaint ${r.report_code} exceeded its SLA target and was escalated to supervisory officers.`,
+      `आपकी शिकायत (${r.report_code}) SLA समय सीमा के बाद उच्च अधिकारियों को एस्केलेट कर दी गई है।`,
+      r.id,
+      nowIso
+    );
+  }
+
+  recordAudit(req.authUser!.id, req.authUser!.role, 'run_sla_escalation_scan', 'civic_report', 'batch', { escalatedCount: overdueRows.length });
+  if (overdueRows.length > 0) broadcastEvent('civic_updated', { action: 'escalated', count: overdueRows.length });
+  res.json({ escalatedCount: overdueRows.length });
+});
+
+app.get('/api/authority/security-audit', requireAuth, requireRole('authority', 'admin'), (_req, res) => {
+  const auditLogs = db.prepare(`SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 60`).all();
+  const smsLogs = db
+    .prepare(`SELECT id, event_type, caregiver_phone, sms_status, sms_error, whatsapp_status, created_at FROM caregiver_notifications ORDER BY created_at DESC LIMIT 40`)
+    .all();
+  res.json({
+    auditLogs,
+    smsLogs,
+    messagingProvider: getMessagingProviderStatus(),
+  });
+});
+
+// ============================================================================
 // USER-SCOPED NOTIFICATIONS & ANALYTICS
 // ============================================================================
 app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
   const rows = db
-    .prepare(`SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`)
+    .prepare(`SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`)
     .all(req.authUser!.id);
   res.json({ notifications: rows });
 });
@@ -1854,12 +3371,17 @@ app.patch('/api/notifications/:id/read', requireAuth, (req: AuthenticatedRequest
   res.json({ ok: true });
 });
 
+app.post('/api/notifications/mark-all-read', requireAuth, (req: AuthenticatedRequest, res) => {
+  db.prepare(`UPDATE notifications SET is_read = 1 WHERE user_id = ?`).run(req.authUser!.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/analytics/summary', requireAuth, (req: AuthenticatedRequest, res) => {
   const user = req.authUser!;
   const reports =
     user.role === 'citizen'
-      ? (db.prepare(`SELECT category, ward, severity, status, sla_deadline FROM civic_reports WHERE user_id = ?`).all(user.id) as Array<Record<string, unknown>>)
-      : (db.prepare(`SELECT category, ward, severity, status, sla_deadline FROM civic_reports`).all() as Array<Record<string, unknown>>);
+      ? (db.prepare(`SELECT category, ward, severity, status, sla_deadline, department_id, created_at FROM civic_reports WHERE user_id = ?`).all(user.id) as Array<Record<string, unknown>>)
+      : (db.prepare(`SELECT category, ward, severity, status, sla_deadline, department_id, created_at FROM civic_reports`).all() as Array<Record<string, unknown>>);
 
   const routes = db.prepare(`SELECT verification_status, reliability_score FROM transit_routes`).all() as Array<Record<string, unknown>>;
   const vehicles = db.prepare(`SELECT status FROM transit_vehicles`).all() as Array<Record<string, unknown>>;
@@ -1868,14 +3390,17 @@ app.get('/api/analytics/summary', requireAuth, (req: AuthenticatedRequest, res) 
 
   const byCategory: Record<string, number> = {};
   const byWard: Record<string, number> = {};
+  const byStatus: Record<string, number> = {};
   let overdueCount = 0;
 
   for (const r of reports) {
     const cat = String(r.category);
     const ward = String(r.ward);
+    const st = String(r.status);
     byCategory[cat] = (byCategory[cat] || 0) + 1;
     byWard[ward] = (byWard[ward] || 0) + 1;
-    if (!['Resolved', 'Rejected'].includes(String(r.status)) && new Date(String(r.sla_deadline)) < new Date()) {
+    byStatus[st] = (byStatus[st] || 0) + 1;
+    if (!['Resolved', 'Rejected'].includes(st) && new Date(String(r.sla_deadline)) < new Date()) {
       overdueCount += 1;
     }
   }
@@ -1889,6 +3414,7 @@ app.get('/api/analytics/summary', requireAuth, (req: AuthenticatedRequest, res) 
       overduePct: reports.length ? Math.round((overdueCount / reports.length) * 100) : 0,
       byCategory,
       byWard,
+      byStatus,
     },
     transit: {
       totalRoutes: routes.length,

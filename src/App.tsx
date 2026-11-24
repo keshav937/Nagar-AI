@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Bell, Sun, Moon, Mic, Globe, Menu, X, ShieldAlert, HeartPulse, Shield } from 'lucide-react';
+import { Bell, Sun, Moon, Mic, Globe, Menu, X, Shield } from 'lucide-react';
 import type {
   AccessibilitySettings,
   AuthUser,
@@ -30,17 +30,24 @@ import { WomenSafetyModule } from './components/WomenSafetyModule.tsx';
 import { MedicalAssistanceModule } from './components/MedicalAssistanceModule.tsx';
 import { CaregiverPortal } from './components/CaregiverPortal.tsx';
 import { AdminDashboard } from './components/AdminDashboard.tsx';
+import { CitizenDashboard } from './components/CitizenDashboard.tsx';
+import { AuthorityGrievanceBox } from './components/AuthorityGrievanceBox.tsx';
+import { RewardsModule } from './components/RewardsModule.tsx';
+import { AuthorityPortal } from './components/AuthorityPortal.tsx';
 
 type ActiveTab =
   | 'home'
   | 'overview'
   | 'civic'
+  | 'grievances'
   | 'safety'
   | 'medical'
   | 'caregiver'
+  | 'authority'
   | 'admin'
   | 'mobility'
   | 'waste'
+  | 'rewards'
   | 'map'
   | 'analytics'
   | 'notifications'
@@ -57,6 +64,7 @@ export default function App() {
   const [authInitialPortal, setAuthInitialPortal] = useState<'citizen' | 'caregiver' | 'authority' | 'admin'>('citizen');
   const [saathiOpen, setSaathiOpen] = useState(false);
   const [pendingCaregiverToken, setPendingCaregiverToken] = useState<string | null>(null);
+  const [medicalRefreshTick, setMedicalRefreshTick] = useState(0);
 
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
     enabled: true,
@@ -140,6 +148,7 @@ export default function App() {
         }
         if (res.user.role === 'caregiver') setActiveTab('caregiver');
         else if (res.user.role === 'admin') setActiveTab('admin');
+        else if (res.user.role === 'authority') setActiveTab('authority');
         else setActiveTab('overview');
       })
       .catch(() => {
@@ -220,12 +229,16 @@ export default function App() {
     if (!user) return;
     const es = new EventSource('/api/events', { withCredentials: true });
     const handler = () => {
+      setMedicalRefreshTick((n) => n + 1);
       refreshAllData();
     };
     es.addEventListener('civic_updated', handler);
     es.addEventListener('transit_updated', handler);
     es.addEventListener('waste_updated', handler);
     es.addEventListener('safety_updated', handler);
+    es.addEventListener('medical_updated', handler);
+    es.addEventListener('grievance_updated', handler);
+    es.addEventListener('notification_broadcast', handler);
     return () => {
       es.close();
     };
@@ -272,6 +285,7 @@ export default function App() {
     if (authUser.preferredLanguage) setLanguage(authUser.preferredLanguage);
     if (authUser.role === 'caregiver') setActiveTab('caregiver');
     else if (authUser.role === 'admin') setActiveTab('admin');
+    else if (authUser.role === 'authority') setActiveTab('authority');
     else if (authUser.role === 'transit_driver') setActiveTab('mobility');
     else if (authUser.role === 'sanitation_driver') setActiveTab('waste');
     else setActiveTab('overview');
@@ -295,19 +309,33 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: 1 } : n)));
   };
 
+  const handleMarkAllNotifRead = async () => {
+    await apiFetch('/api/notifications/mark-all-read', { method: 'POST' });
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: 1 })));
+  };
+
   const navigateProtected = (target: ActiveTab) => {
     if (target === 'home') {
       setActiveTab('home');
       return;
     }
     if (!user) {
-      openAuthPortal(target === 'caregiver' ? 'caregiver' : target === 'admin' ? 'admin' : 'citizen');
+      openAuthPortal(
+        target === 'caregiver'
+          ? 'caregiver'
+          : target === 'admin'
+            ? 'admin'
+            : target === 'authority'
+              ? 'authority'
+              : 'citizen'
+      );
       return;
     }
     // Enforce frontend role alignment cleanly (backend enforces strictly too)
     if (target === 'admin' && user.role !== 'admin') return;
+    if (target === 'authority' && !['authority', 'admin'].includes(user.role)) return;
     if (target === 'caregiver' && user.role !== 'caregiver') return;
-    if (target === 'safety' && user.role !== 'citizen') return;
+    if ((target === 'safety' || target === 'grievances' || target === 'rewards') && user.role !== 'citizen') return;
     setActiveTab(target);
   };
 
@@ -328,29 +356,29 @@ export default function App() {
             { id: 'caregiver', label: copy.navCaregiver },
             { id: 'profile', label: copy.navProfile },
           ]
-        : user.role === 'admin'
-          ? [
-              { id: 'admin', label: copy.navAdmin },
-              { id: 'civic', label: 'All Reports' },
-              { id: 'map', label: copy.navMap },
-              { id: 'analytics', label: copy.navAnalytics },
-              { id: 'profile', label: copy.navProfile },
-            ]
-          : user.role === 'authority'
+          : user.role === 'admin'
             ? [
-                { id: 'overview', label: copy.navOverview },
-                { id: 'civic', label: 'Department Queue' },
-                { id: 'mobility', label: copy.navMobility },
-                { id: 'waste', label: copy.navWaste },
+                { id: 'admin', label: copy.navAdmin },
+                { id: 'authority', label: copy.navAuthority },
+                { id: 'civic', label: 'All Reports' },
                 { id: 'map', label: copy.navMap },
+                { id: 'profile', label: copy.navProfile },
               ]
-            : [
-                { id: 'overview', label: copy.navOverview },
-                { id: 'civic', label: copy.navCivic },
-                { id: 'safety', label: copy.navSafety },
-                { id: 'medical', label: copy.navMedical },
-                { id: 'map', label: copy.navMap },
-              ];
+            : user.role === 'authority'
+              ? [
+                  { id: 'authority', label: copy.navAuthority },
+                  { id: 'civic', label: 'Department Queue' },
+                  { id: 'mobility', label: copy.navMobility },
+                  { id: 'waste', label: copy.navWaste },
+                  { id: 'map', label: copy.navMap },
+                ]
+              : [
+                  { id: 'overview', label: copy.navOverview },
+                  { id: 'civic', label: copy.navCivic },
+                  { id: 'safety', label: copy.navSafety },
+                  { id: 'medical', label: copy.navMedical },
+                  { id: 'map', label: copy.navMap },
+                ];
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAF9] dark:bg-[#0B110E] text-slate-900 dark:text-slate-100">
@@ -359,7 +387,19 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
           <button
             type="button"
-            onClick={() => setActiveTab(user ? (user.role === 'caregiver' ? 'caregiver' : user.role === 'admin' ? 'admin' : 'overview') : 'home')}
+            onClick={() =>
+              setActiveTab(
+                user
+                  ? user.role === 'caregiver'
+                    ? 'caregiver'
+                    : user.role === 'admin'
+                      ? 'admin'
+                      : user.role === 'authority'
+                        ? 'authority'
+                        : 'overview'
+                  : 'home'
+              )
+            }
             className="font-display text-lg font-extrabold tracking-tight text-slate-950 dark:text-white whitespace-nowrap shrink-0 cursor-pointer"
           >
             NAGAR AI
@@ -439,10 +479,13 @@ export default function App() {
                 (
                   [
                     ['overview', copy.navOverview],
+                    ['civic', copy.navCivic],
+                    ['grievances', copy.navGrievances],
                     ['safety', copy.navSafety],
                     ['medical', copy.navMedical],
                     ['mobility', copy.navMobility],
                     ['waste', copy.navWaste],
+                    ['rewards', copy.navRewards],
                     ['analytics', copy.navAnalytics],
                     ['notifications', `${copy.navNotifications}${unreadCount ? ` (${unreadCount})` : ''}`],
                     ['profile', copy.navProfile],
@@ -465,7 +508,7 @@ export default function App() {
               {(user.role === 'authority' || user.role === 'transit_driver' || user.role === 'sanitation_driver') &&
                 (
                   [
-                    ['overview', copy.navOverview],
+                    ...(user.role === 'authority' ? ([['authority', copy.navAuthority]] as Array<[ActiveTab, string]>) : []),
                     ['civic', 'Civic Queue'],
                     ['mobility', copy.navMobility],
                     ['waste', copy.navWaste],
@@ -543,114 +586,17 @@ export default function App() {
           />
         ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            {activeTab === 'overview' && (
+            {activeTab === 'overview' && user.role === 'citizen' && (
               <div className="space-y-6">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <h1 className="text-2xl font-display font-bold text-slate-950 dark:text-white">
-                      Welcome, {user.name}
-                    </h1>
-                    <p className="text-sm text-slate-600 dark:text-slate-400">
-                      {user.role === 'citizen'
-                        ? 'Your private Citizen Dashboard — personal reports, Women Safety & SOS, nearby medical assistance, and mobility.'
-                        : `Authenticated ${user.role.replace('_', ' ')} Workspace`}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {user.role === 'citizen' && (
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('safety')}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 cursor-pointer"
-                      >
-                        <ShieldAlert className="w-4 h-4" />
-                        Women Safety &amp; SOS
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setSaathiOpen(true)}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
-                    >
-                      <Mic className="w-4 h-4" />
-                      Speak with {copy.saathiName}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('civic')}
-                    className="text-left bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-emerald-600 transition-colors cursor-pointer"
-                  >
-                    <div className="text-xs text-slate-500">
-                      {user.role === 'citizen' ? 'My Civic Reports' : 'Assigned Department Reports'}
-                    </div>
-                    <div className="mt-1 text-2xl font-display font-bold tabular-nums">{reports.length} Reports</div>
-                    <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
-                      {reports.length === 0
-                        ? copy.noReportsYet
-                        : `${reports.filter((r) => r.isOverdue).length} overdue SLA · View`}
-                    </div>
-                  </button>
-
-                  {user.role === 'citizen' ? (
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('medical')}
-                      className="text-left bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-emerald-600 transition-colors cursor-pointer"
-                    >
-                      <div className="text-xs text-slate-500 flex items-center gap-1.5">
-                        <HeartPulse className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
-                        Medical &amp; Safety Aid
-                      </div>
-                      <div className="mt-1 text-lg font-display font-bold">Nearby Hospitals &amp; Police</div>
-                      <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
-                        Live GPS OpenStreetMap lookup →
-                      </div>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('mobility')}
-                      className="text-left bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-emerald-600 transition-colors cursor-pointer"
-                    >
-                      <div className="text-xs text-slate-500">Smart Mobility</div>
-                      <div className="mt-1 text-2xl font-display font-bold tabular-nums">{routes.length} Routes</div>
-                      <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
-                        {vehicles.filter((v) => v.status === 'active').length} active vehicles
-                      </div>
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('waste')}
-                    className="text-left bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-emerald-600 transition-colors cursor-pointer"
-                  >
-                    <div className="text-xs text-slate-500">Waste &amp; Rewards</div>
-                    <div className="mt-1 text-2xl font-display font-bold tabular-nums">
-                      {myRewards ? `${myRewards.points} pts` : `${bins.length} Smart Bins`}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                      {bins.filter((b) => b.status === 'overflowing').length} overflowing alert
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('notifications')}
-                    className="text-left bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-emerald-600 transition-colors cursor-pointer"
-                  >
-                    <div className="text-xs text-slate-500">My Notifications</div>
-                    <div className="mt-1 text-2xl font-display font-bold tabular-nums">{unreadCount} Unread</div>
-                    <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                      {notifications.length === 0 ? 'No notifications yet' : 'View personal alerts'}
-                    </div>
-                  </button>
-                </div>
-
+                <CitizenDashboard
+                  user={user}
+                  language={language}
+                  geo={geo}
+                  onRequestGps={requestLocation}
+                  onNavigateTab={(tab) => navigateProtected(tab as ActiveTab)}
+                  onOpenSaathi={() => setSaathiOpen(true)}
+                  refreshTrigger={medicalRefreshTick}
+                />
                 <CityMap
                   geo={geo}
                   onRequestGps={requestLocation}
@@ -666,6 +612,56 @@ export default function App() {
                 />
               </div>
             )}
+
+            {activeTab === 'overview' && user.role === 'authority' && (
+              <AuthorityPortal
+                user={user}
+                reports={reports}
+                departments={departments}
+                officers={officers}
+                notifications={notifications}
+                onRefreshCityData={refreshAllData}
+                refreshTrigger={medicalRefreshTick}
+              />
+            )}
+
+            {activeTab === 'overview' && user.role !== 'citizen' && user.role !== 'authority' && (
+              <CityMap
+                geo={geo}
+                onRequestGps={requestLocation}
+                onManualPin={setManualLocation}
+                reports={reports}
+                routes={routes}
+                vehicles={vehicles}
+                bins={bins}
+                recyclingCentres={recyclingCentres}
+                language={language}
+                onRefreshData={refreshAllData}
+              />
+            )}
+
+            {activeTab === 'authority' && (
+              <AuthorityPortal
+                user={user}
+                reports={reports}
+                departments={departments}
+                officers={officers}
+                notifications={notifications}
+                onRefreshCityData={refreshAllData}
+                refreshTrigger={medicalRefreshTick}
+              />
+            )}
+
+            {activeTab === 'grievances' && (
+              <AuthorityGrievanceBox
+                user={user}
+                departments={departments}
+                onRequireAuth={() => openAuthPortal('citizen')}
+                refreshTrigger={medicalRefreshTick}
+              />
+            )}
+
+            {activeTab === 'rewards' && <RewardsModule user={user} />}
 
             {activeTab === 'safety' && (
               <WomenSafetyModule
@@ -685,6 +681,7 @@ export default function App() {
                 onRequestGps={requestLocation}
                 onManualPin={setManualLocation}
                 onNavigateTab={(tab) => navigateProtected(tab as ActiveTab)}
+                refreshTrigger={medicalRefreshTick}
               />
             )}
 
@@ -716,6 +713,8 @@ export default function App() {
               <TransitModule
                 user={user}
                 geo={geo}
+                onRequestGps={requestLocation}
+                onManualPin={setManualLocation}
                 routes={routes}
                 vehicles={vehicles}
                 onRefresh={refreshAllData}
@@ -768,10 +767,21 @@ export default function App() {
 
             {activeTab === 'notifications' && (
               <div className="bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4 max-w-3xl">
-                <h2 className="text-xl font-display font-bold flex items-center gap-2">
-                  <Bell className="w-5 h-5 text-emerald-700 dark:text-emerald-400" />
-                  Notifications Center
-                </h2>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-xl font-display font-bold flex items-center gap-2">
+                    <Bell className="w-5 h-5 text-emerald-700 dark:text-emerald-400" />
+                    Notifications Center
+                  </h2>
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleMarkAllNotifRead}
+                      className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                    >
+                      Mark All Read
+                    </button>
+                  )}
+                </div>
                 {notifications.length === 0 ? (
                   <p className="text-sm text-slate-500">No notifications yet.</p>
                 ) : (
@@ -840,10 +850,13 @@ export default function App() {
             const valid: ActiveTab[] = [
               'overview',
               'civic',
+              'grievances',
               'safety',
               'medical',
+              'authority',
               'mobility',
               'waste',
+              'rewards',
               'map',
               'analytics',
               'notifications',

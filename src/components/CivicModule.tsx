@@ -8,22 +8,19 @@ import {
   Crosshair,
   AlertTriangle,
   MessageSquare,
+  Star,
+  CheckCircle2,
 } from 'lucide-react';
 import type { AuthUser, CivicReport, GeoLocationState, LanguageCode } from '../types.ts';
 import { apiFetch } from '../api/client.ts';
 
 const CIVIC_CATEGORIES = [
-  'Potholes',
-  'Damaged roads',
-  'Garbage dumping',
-  'Broken streetlights',
-  'Water leakage',
-  'Drainage blockage',
-  'Damaged footpaths',
-  'Open manholes',
-  'Public infrastructure damage',
-  'Illegal dumping',
-  'Other civic issues',
+  'Potholes and damaged roads',
+  'Garbage and waste management',
+  'Blocked drains and waterlogging',
+  'Traffic problems and road obstructions',
+  'Street lighting and electrical faults',
+  'Other civic infrastructure problems',
 ];
 
 interface Department {
@@ -106,7 +103,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Report form state
-  const [category, setCategory] = useState('Potholes');
+  const [category, setCategory] = useState(CIVIC_CATEGORIES[0]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [landmark, setLandmark] = useState('');
@@ -121,8 +118,10 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
   const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Comment & Authority management state
+  // Comment, Citizen feedback & Authority management state
   const [commentText, setCommentText] = useState('');
+  const [ratingVal, setRatingVal] = useState(5);
+  const [ratingFeedback, setRatingFeedback] = useState('');
   const [manageStatus, setManageStatus] = useState('');
   const [manageOfficer, setManageOfficer] = useState('');
   const [manageComment, setManageComment] = useState('');
@@ -130,6 +129,11 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
   const effectiveLat = geo.lat ?? (Number(manualLat) || null);
   const effectiveLng = geo.lng ?? (Number(manualLng) || null);
   const effectiveAddress = address.trim() || geo.address;
+
+  const activeSelectedReport = useMemo(() => {
+    if (!selectedReport) return null;
+    return reports.find((r) => r.id === selectedReport.id) || selectedReport;
+  }, [reports, selectedReport]);
 
   const stats = useMemo(() => {
     const total = reports.length;
@@ -163,6 +167,22 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
     }
   };
 
+  const handleAddMoreEvidence = async (reportId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const compressed = await compressImageFile(file);
+      await apiFetch(`/api/civic/reports/${reportId}/evidence`, {
+        method: 'POST',
+        body: JSON.stringify({ evidenceUrls: [compressed.dataUrl] }),
+      });
+      setFeedbackMsg({ type: 'ok', text: 'Additional evidence uploaded to complaint record.' });
+      onRefresh();
+    } catch (err) {
+      setFeedbackMsg({ type: 'err', text: err instanceof Error ? err.message : 'Unable to add evidence.' });
+    }
+  };
+
   const handleEnhanceDescription = async () => {
     if (!user) return onRequireAuth();
     if (!description.trim()) {
@@ -177,10 +197,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
         body: JSON.stringify({ draft: description, category, language }),
       });
       setDescription(res.enhancedText);
-      setFeedbackMsg({
-        type: 'ok',
-        text: 'Description structured by Gemini AI.',
-      });
+      setFeedbackMsg({ type: 'ok', text: 'Description structured by Gemini AI.' });
     } catch (err) {
       setFeedbackMsg({ type: 'err', text: err instanceof Error ? err.message : 'AI enhancement failed.' });
     } finally {
@@ -251,7 +268,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
           aiVerification: aiResult || {},
         }),
       });
-      setFeedbackMsg({ type: 'ok', text: `Complaint ${res.reportCode} submitted and saved to database.` });
+      setFeedbackMsg({ type: 'ok', text: `Complaint ${res.reportCode} submitted and routed to Authority Portal.` });
       setTitle('');
       setDescription('');
       setLandmark('');
@@ -280,6 +297,20 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
       onRefresh();
     } catch (err) {
       setFeedbackMsg({ type: 'err', text: err instanceof Error ? err.message : 'Failed to post comment.' });
+    }
+  };
+
+  const handleSubmitRating = async (reportId: string) => {
+    try {
+      await apiFetch(`/api/civic/reports/${reportId}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ rating: ratingVal, feedback: ratingFeedback }),
+      });
+      setFeedbackMsg({ type: 'ok', text: 'Resolution rating recorded.' });
+      setRatingFeedback('');
+      onRefresh();
+    } catch (err) {
+      setFeedbackMsg({ type: 'err', text: err instanceof Error ? err.message : 'Unable to save rating.' });
     }
   };
 
@@ -323,10 +354,10 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-display font-bold text-slate-950 dark:text-white">
-            Civic Issue Management
+            Civic Issue Reporting &amp; Resolution
           </h2>
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            GPS-verified municipal reporting, AI triage verification, and community confirmation.
+            GPS-verified municipal reporting, evidence tracking, and live department resolution proof.
           </p>
         </div>
 
@@ -366,7 +397,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                   : 'text-slate-600 dark:text-slate-400'
               }`}
             >
-              Department Roster &amp; CSV
+              Departments &amp; CSV
             </button>
           )}
         </div>
@@ -440,7 +471,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div className={`${selectedReport ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-3`}>
+            <div className={`${activeSelectedReport ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-3`}>
               {filteredReports.length === 0 ? (
                 <div className="bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-8 text-center">
                   <p className="text-sm text-slate-600 dark:text-slate-400">
@@ -459,7 +490,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                       setManageOfficer(r.officer_id || '');
                     }}
                     className={`bg-white dark:bg-[#111916] border rounded-xl p-5 cursor-pointer transition-colors ${
-                      selectedReport?.id === r.id
+                      activeSelectedReport?.id === r.id
                         ? 'border-emerald-600'
                         : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                     }`}
@@ -500,15 +531,15 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
               )}
             </div>
 
-            {selectedReport && (
+            {activeSelectedReport && (
               <div className="lg:col-span-5 bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-5 h-fit space-y-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-xs font-mono tabular-nums text-slate-500">
-                      {selectedReport.report_code} · Severity: {selectedReport.severity.toUpperCase()}
+                      {activeSelectedReport.report_code} · Severity: {activeSelectedReport.severity.toUpperCase()}
                     </div>
                     <h3 className="mt-1 text-lg font-display font-bold text-slate-900 dark:text-white">
-                      {selectedReport.title}
+                      {activeSelectedReport.title}
                     </h3>
                   </div>
                   <button
@@ -520,24 +551,109 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                   </button>
                 </div>
 
-                {selectedReport.evidenceUrls.length > 0 && (
-                  <img
-                    src={selectedReport.evidenceUrls[0]}
-                    alt="Complaint evidence"
-                    className="w-full h-44 object-cover rounded-lg border border-slate-200 dark:border-slate-800"
-                  />
+                {activeSelectedReport.evidenceUrls.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {activeSelectedReport.evidenceUrls.map((url, idx) => (
+                      <img
+                        key={idx}
+                        src={url}
+                        alt={`Evidence ${idx + 1}`}
+                        className="w-full h-32 object-cover rounded-lg border border-slate-200 dark:border-slate-800"
+                      />
+                    ))}
+                  </div>
                 )}
 
                 <div className="text-sm text-slate-700 dark:text-slate-300 space-y-1">
-                  <p>{selectedReport.description}</p>
+                  <p>{activeSelectedReport.description}</p>
                   <p className="text-xs text-slate-500 pt-1">
-                    Department: {selectedReport.department_name || 'Unassigned'} · Officer:{' '}
-                    {selectedReport.officer_name || 'Pending'}
+                    Department: {activeSelectedReport.department_name || 'Unassigned'} · Officer:{' '}
+                    {activeSelectedReport.officer_name || 'Pending'}
                   </p>
                   <p className="text-xs font-mono tabular-nums text-slate-500">
-                    SLA Deadline: {new Date(selectedReport.sla_deadline).toLocaleString()}
+                    SLA Deadline: {new Date(activeSelectedReport.sla_deadline).toLocaleString()}
                   </p>
                 </div>
+
+                {user?.role === 'citizen' &&
+                  user.id === activeSelectedReport.user_id &&
+                  !['Resolved', 'Rejected'].includes(activeSelectedReport.status) && (
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload Additional Evidence</span>
+                      <input
+                        type="file"
+                        accept="image/*,video/*"
+                        onChange={(e) => handleAddMoreEvidence(activeSelectedReport.id, e)}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+
+                {/* Official Resolution Proof (Before/After + Notes) */}
+                {(activeSelectedReport.resolution_notes ||
+                  (activeSelectedReport.resolutionEvidenceUrls && activeSelectedReport.resolutionEvidenceUrls.length > 0)) && (
+                  <div className="p-3 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 space-y-2">
+                    <div className="text-xs font-semibold text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Official Resolution Proof
+                    </div>
+                    {activeSelectedReport.resolution_notes && (
+                      <p className="text-xs text-slate-700 dark:text-slate-200">{activeSelectedReport.resolution_notes}</p>
+                    )}
+                    {activeSelectedReport.resolutionEvidenceUrls.length > 0 && (
+                      <div className="grid grid-cols-2 gap-2">
+                        {activeSelectedReport.resolutionEvidenceUrls.map((u, i) => (
+                          <img
+                            key={i}
+                            src={u}
+                            alt={`Resolution proof ${i + 1}`}
+                            className="w-full h-24 object-cover rounded border border-emerald-200 dark:border-emerald-800"
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Citizen Feedback Rating after resolution */}
+                {user?.role === 'citizen' &&
+                  activeSelectedReport.status === 'Resolved' &&
+                  !activeSelectedReport.citizen_rating && (
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+                      <div className="font-semibold flex items-center gap-1.5">
+                        <Star className="w-3.5 h-3.5 text-amber-500" />
+                        Rate Resolution Quality
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={ratingVal}
+                          onChange={(e) => setRatingVal(Number(e.target.value))}
+                          className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                        >
+                          <option value={5}>5 / 5 Excellent</option>
+                          <option value={4}>4 / 5 Good</option>
+                          <option value={3}>3 / 5 Satisfactory</option>
+                          <option value={2}>2 / 5 Needs Work</option>
+                          <option value={1}>1 / 5 Unresolved</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={ratingFeedback}
+                          onChange={(e) => setRatingFeedback(e.target.value)}
+                          placeholder="Optional feedback..."
+                          className="flex-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSubmitRating(activeSelectedReport.id)}
+                          className="px-3 py-1 rounded bg-emerald-700 text-white font-semibold cursor-pointer"
+                        >
+                          Submit
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                 {/* Activity Timeline */}
                 <div className="border-t border-slate-200 dark:border-slate-800 pt-3">
@@ -546,7 +662,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                     Status Lifecycle Timeline
                   </h4>
                   <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {selectedReport.activities.map((a) => (
+                    {activeSelectedReport.activities.map((a) => (
                       <div key={a.id} className="text-xs border-b border-slate-100 dark:border-slate-800/60 pb-2">
                         <div className="font-medium text-slate-800 dark:text-slate-200">
                           {a.new_status} · {a.actor_name} ({a.actor_role})
@@ -571,7 +687,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                   />
                   <button
                     type="button"
-                    onClick={() => handlePostComment(selectedReport.id)}
+                    onClick={() => handlePostComment(activeSelectedReport.id)}
                     className="inline-flex items-center gap-1 px-3 py-2 text-xs font-medium rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 cursor-pointer"
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
@@ -591,13 +707,20 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                         onChange={(e) => setManageStatus(e.target.value)}
                         className="px-2.5 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                       >
-                        {['Submitted', 'Under Review', 'Verified', 'Assigned', 'In Progress', 'Resolved', 'Rejected', 'Escalated'].map(
-                          (s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          )
-                        )}
+                        {[
+                          'Submitted',
+                          'Under Review',
+                          'Verified',
+                          'Assigned',
+                          'In Progress',
+                          'Resolved',
+                          'Rejected',
+                          'Escalated',
+                        ].map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
                       </select>
                       <select
                         value={manageOfficer}
@@ -621,10 +744,10 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                     />
                     <button
                       type="button"
-                      onClick={() => handleAuthorityManage(selectedReport.id)}
+                      onClick={() => handleAuthorityManage(activeSelectedReport.id)}
                       className="w-full py-2 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
                     >
-                      Save Assignment & Status
+                      Save Assignment &amp; Status
                     </button>
                   </div>
                 )}
@@ -646,7 +769,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
                 Submit Civic Complaint
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Requires verified GPS coordinates or manual map coordinates. AI checks do not replace authority review.
+                Requires verified GPS coordinates or manual map coordinates. Automatically routed to the matching Department &amp; Authority Portal.
               </p>
             </div>
             <button
@@ -661,7 +784,9 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Issue Category</label>
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Issue Category
+              </label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
@@ -676,7 +801,9 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Severity Level</label>
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Severity Level
+              </label>
               <select
                 value={severity}
                 onChange={(e) => setSeverity(e.target.value as 'low' | 'medium' | 'high' | 'critical')}
@@ -802,7 +929,7 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-emerald-600 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              Run AI Photo & Duplicate Triage
+              Run AI Photo &amp; Duplicate Triage
             </button>
           </div>
 
@@ -850,13 +977,13 @@ export const CivicModule: React.FC<CivicModuleProps> = ({
         </form>
       )}
 
-      {/* TAB 3: AUTHORITY CONSOLE */}
+      {/* TAB 3: AUTHORITY DEPARTMENTS */}
       {subTab === 'authority' && (user?.role === 'authority' || user?.role === 'admin') && (
         <div className="bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-lg font-display font-semibold text-slate-900 dark:text-white">
-                Municipal Departments & Field Officers
+                Municipal Departments &amp; Field Officers
               </h3>
               <p className="text-xs text-slate-500">Manage SLA targets, department rosters, and export complaint logs.</p>
             </div>

@@ -30,6 +30,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [adminStatus, setAdminStatus] = useState<{ envConfigured: boolean; claimed: boolean } | null>(null);
   const [adminPasscode, setAdminPasscode] = useState('');
 
+  // Google OAuth config
+  const [googleConfig, setGoogleConfig] = useState<{ configured: boolean; redirectUri?: string } | null>(null);
+
   // Account recovery
   const [recoveryKeyInput, setRecoveryKeyInput] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -51,7 +54,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     apiFetch<{ envConfigured: boolean; claimed: boolean }>('/api/auth/admin-status')
       .then(setAdminStatus)
       .catch(() => {});
+    apiFetch<{ configured: boolean; redirectUri?: string }>('/api/auth/google/config')
+      .then(setGoogleConfig)
+      .catch(() => {});
   }, [isOpen, initialPortal]);
+
+  // Listen for OAuth callback postMessage
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMessage = (event: MessageEvent) => {
+      if (!event.data || typeof event.data !== 'object') return;
+      if (event.data.type === 'NAGAR_GOOGLE_AUTH_SUCCESS') {
+        const payload = event.data.payload as { token?: string; user?: AuthUser };
+        if (payload?.token && payload?.user) {
+          setSessionToken(payload.token);
+          onAuthenticated(payload.user);
+          onClose();
+        }
+        setLoading(false);
+      } else if (event.data.type === 'NAGAR_GOOGLE_AUTH_ERROR') {
+        const payload = event.data.payload as { error?: string };
+        setError(payload?.error || 'Google Sign-In could not be verified.');
+        setLoading(false);
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [isOpen, onAuthenticated, onClose]);
 
   if (!isOpen) return null;
 
@@ -59,6 +88,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (portal === 'citizen') return 'citizen';
     if (portal === 'caregiver') return 'caregiver';
     return operatorRole;
+  };
+
+  const handleGoogleSignIn = async (targetPortal: 'citizen' | 'caregiver' | 'authority' | 'admin') => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await apiFetch<{ url: string }>(`/api/auth/google/url?portal=${encodeURIComponent(targetPortal)}`);
+      const popup = window.open(
+        res.url,
+        'nagar_google_oauth',
+        'width=500,height=640,menubar=no,toolbar=no,location=no,status=no'
+      );
+      if (!popup) {
+        setError('Popup blocked by your browser. Please allow popups for this site to use Google Sign-In.');
+        setLoading(false);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Google Sign-In is unavailable. Use email & password or configure GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.'
+      );
+      setLoading(false);
+    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -175,13 +228,49 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setTimeout(() => setCopiedKey(false), 2000);
   };
 
+  const GoogleButton = ({ targetPortal }: { targetPortal: 'citizen' | 'caregiver' | 'authority' | 'admin' }) => (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        disabled={loading}
+        onClick={() => handleGoogleSignIn(targetPortal)}
+        className="w-full py-2.5 px-3 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-900 dark:text-white flex items-center justify-center gap-2 cursor-pointer"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="#4285F4"
+            d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+          />
+          <path
+            fill="#34A853"
+            d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+          />
+          <path
+            fill="#FBBC05"
+            d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+          />
+          <path
+            fill="#EA4335"
+            d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+          />
+        </svg>
+        Continue with Google ({targetPortal === 'authority' ? 'Authorized Officer' : targetPortal})
+      </button>
+      {googleConfig && !googleConfig.configured && (
+        <p className="text-[11px] text-slate-500 text-center">
+          Google OAuth awaits server secrets (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). Email login works immediately.
+        </p>
+      )}
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Role-Based Portal Authentication"
-        className="w-full max-w-lg bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xl"
+        className="w-full max-w-lg bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xl max-h-[92vh] overflow-y-auto"
       >
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div>
@@ -438,70 +527,94 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       </button>
                     </form>
                   )}
+
+                  <div className="relative py-1">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-slate-200 dark:border-slate-800" />
+                    </div>
+                    <div className="relative flex justify-center text-[11px] uppercase">
+                      <span className="bg-white dark:bg-[#111916] px-2 text-slate-400">Or</span>
+                    </div>
+                  </div>
+
+                  <GoogleButton targetPortal={portal} />
                 </div>
               )}
 
               {portal === 'admin' && (
-                <form onSubmit={handleAdminSubmit} className="space-y-4">
-                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2">
-                    <KeyRound className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
-                    <span>
-                      {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed
-                        ? 'First-run setup: Claim the System Administrator passcode (min 8 chars) to manage officers and system metrics.'
-                        : 'Enter the System Administrator passcode to access the Administrator Control Center.'}
-                    </span>
-                  </div>
-                  {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Administrator Name
-                        </label>
-                        <input
-                          type="text"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="System Administrator"
-                          className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Admin Email
-                        </label>
-                        <input
-                          type="email"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          placeholder="admin@nagar.gov.in"
-                          className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                        />
-                      </div>
+                <div className="space-y-4">
+                  <form onSubmit={handleAdminSubmit} className="space-y-4">
+                    <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2">
+                      <KeyRound className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <span>
+                        {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed
+                          ? 'First-run setup: Claim the System Administrator passcode (min 8 chars) to manage officers and system metrics.'
+                          : 'Enter the System Administrator passcode or sign in with an authorized Administrator Google email.'}
+                      </span>
                     </div>
-                  )}
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Administrator Passcode
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      minLength={8}
-                      value={adminPasscode}
-                      onChange={(e) => setAdminPasscode(e.target.value)}
-                      className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-                    />
+                    {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Administrator Name
+                          </label>
+                          <input
+                            type="text"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="System Administrator"
+                            className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Admin Email
+                          </label>
+                          <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="admin@nagar.gov.in"
+                            className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                          />
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Administrator Passcode
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={adminPasscode}
+                        onChange={(e) => setAdminPasscode(e.target.value)}
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full py-2.5 text-sm font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+                    >
+                      {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed
+                        ? 'Claim System Administrator Access'
+                        : 'Sign In as Administrator'}
+                    </button>
+                  </form>
+
+                  <div className="relative py-1">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-slate-200 dark:border-slate-800" />
+                    </div>
+                    <div className="relative flex justify-center text-[11px] uppercase">
+                      <span className="bg-white dark:bg-[#111916] px-2 text-slate-400">Authorized Admin Google</span>
+                    </div>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-2.5 text-sm font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
-                  >
-                    {adminStatus && !adminStatus.envConfigured && !adminStatus.claimed
-                      ? 'Claim System Administrator Access'
-                      : 'Sign In as Administrator'}
-                  </button>
-                </form>
+
+                  <GoogleButton targetPortal="admin" />
+                </div>
               )}
 
               {portal === 'recover' && (

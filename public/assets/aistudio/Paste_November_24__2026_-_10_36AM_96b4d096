@@ -1,0 +1,914 @@
+# NAGAR AI — COMPLETE PLATFORM TRANSFORMATION MASTER PROMPT
+## SEVA AI CITIZEN DASHBOARD + AUTHORITY PORTAL + SMART MOBILITY + INTEGRATED CAREGIVER SYSTEM
+
+I want a complete transformation of my existing Nagar AI website.
+
+My objective is to incorporate ALL the previously discussed features of Seva AI into Nagar AI, including its Citizen Dashboard and Authority Dashboard, and make every feature genuinely functional.
+
+This is not a request to create a new website or a visual prototype. I want the existing Nagar AI application to be upgraded with a fully connected, production-quality working system.
+
+IMPORTANT:
+- Seva AI is the functional and structural reference.
+- Nagar AI is the website that must be modified.
+- Replace the existing Citizen Dashboard features with the Seva AI Citizen Dashboard features.
+- Replace the existing Officer Dashboard with the Seva AI Authority Dashboard features.
+- Preserve the existing Nagar Saathi AI assistant and its integrations.
+- Preserve the existing SOS and verified caregiver functionality.
+- Keep the Admin Portal and make it fully functional.
+- Do not introduce Animal Rescue Hub or Road Accidents anywhere in the new dashboards.
+
+Do not simply copy the appearance of Seva AI. Implement its actual functionality, workflows, data relationships and dashboard structure.
+
+# PART 1 — CITIZEN DASHBOARD TRANSFORMATION
+
+Completely replace the existing Nagar AI Citizen Dashboard modules with the Seva AI Citizen Dashboard functionality.
+
+Create a comprehensive citizen dashboard containing the following modules.
+
+### 1. Citizen Overview Dashboard
+
+Create a personalized dashboard displaying:
+- Welcome message and citizen profile.
+- Total complaints submitted.
+- Pending complaints.
+- Complaints under investigation.
+- Resolved complaints.
+- Active SOS status, if applicable.
+- Personal safety status.
+- Recent notifications.
+- Recent activities.
+- Reward points and achievement badges.
+- Quick access to important services.
+- Live location status.
+
+All statistics must come from the authenticated citizen's actual database records.
+
+Never display common demo statistics or another user's information.
+
+### 2. Civic Issue Reporting
+
+Implement a complete civic complaint reporting system.
+
+Include these categories:
+- Potholes and damaged roads.
+- Garbage and waste management.
+- Blocked drains and waterlogging.
+- Traffic problems and road obstructions.
+- Other civic infrastructure problems.
+
+Reporting functionality:
+- Upload photographs.
+- Capture or select issue location.
+- Automatically detect GPS coordinates with permission.
+- Enter complaint description.
+- Select issue category.
+- Submit complaints.
+- Generate unique complaint ID.
+- Display submission confirmation.
+- Track complaint status.
+- View assigned department.
+- View assigned officer.
+- Receive status notifications.
+- Upload additional evidence.
+- View resolution proof.
+
+Every complaint must automatically appear in the corresponding Officer/Authority Portal.
+
+### 3. Citizen Complaint Box — Officer and Authority Grievances
+
+Create a separate Complaint Box for citizens who want to complain about:
+- Officer behaviour.
+- Delayed complaint resolution.
+- Improper handling of complaints.
+- Unresponsive departments.
+- Incorrect complaint closure.
+- Other authority-related grievances.
+
+Requirements:
+- Separate authority grievance submission from ordinary civic reporting.
+- Allow descriptions and supporting evidence.
+- Generate a grievance ID.
+- Route grievances to authorized administrators.
+- Allow citizens to track grievance progress.
+- Provide status updates.
+- Allow authorized administrators to investigate and resolve grievances.
+
+Citizens must not be required to approach an officer directly to report misconduct or service-related problems.
+
+### 4. Emergency Assistance and SOS
+
+Implement the complete Seva AI emergency assistance system while preserving Nagar AI's existing SOS implementation.
+
+SOS must include:
+- Prominent SOS button.
+- Emergency activation confirmation with an option to cancel accidental activation.
+- Accurate live GPS location.
+- Emergency event creation.
+- Timestamped emergency record.
+- Verified caregiver notifications.
+- Direct call to verified caregiver.
+- Emergency contact access.
+- Live location sharing.
+- Emergency status tracking.
+- Location updates during an active SOS.
+- Emergency history.
+- Clear SOS cancellation and resolution workflow.
+
+The SOS system must be connected to the Caregiver Dashboard and Authority Portal.
+
+Do not replace the existing working SOS functionality with a new incomplete implementation.
+
+### 5. Women and Child Safety
+
+Implement the complete personal safety system.
+
+Include:
+- Personal safety dashboard.
+- Emergency SOS.
+- Live location sharing.
+- Verified caregiver connections.
+- Trusted contact management.
+- Emergency notifications.
+- Safety status.
+- Location-sharing permissions.
+- Emergency history.
+- Safe-place discovery.
+- Geofencing and safety-zone functionality where supported.
+- Guardian monitoring with explicit consent.
+- Emergency call functionality.
+
+Ensure that citizens can manage their own privacy and location-sharing permissions.
+
+### 6. Verified Caregiver Linking and Permissions — MUST PRESERVE
+
+This is an existing important feature of Nagar AI. Do not remove or weaken it.
+
+Preserve and properly implement:
+
+- Verified caregiver linking.
+- Caregiver verification.
+- Citizen-to-caregiver relationship.
+- Secure invitation and acceptance.
+- Permission management.
+- Live location access permissions.
+- Emergency notification permissions.
+- SOS access.
+- Permission revocation.
+- Caregiver unlinking.
+- Direct calling to verified caregivers.
+- Caregiver contact management.
+
+Every citizen must be linked only to their own authorized caregivers.
+
+A caregiver must never be able to access another citizen's private information.
+
+The citizen must be able to see exactly which caregiver has access to which information.
+
+### 7. Live Location Intelligence
+
+Make location sensing work correctly throughout Nagar AI.
+
+Requirements:
+- Use actual browser/device geolocation.
+- Request permission appropriately.
+- Retrieve current latitude and longitude.
+- Display the user's actual position on the map.
+- Update location when the user moves.
+- Display location accuracy.
+- Handle GPS errors and permission denial.
+- Avoid displaying stale coordinates as current location.
+- Allow manual location selection when GPS is unavailable.
+
+Use the same reliable location service across Smart Mobility, Medical Help, Women Safety, SOS and Nearby Places.
+
+### 8. Nearby Public Facilities
+
+Create a properly functioning nearby services module.
+
+Automatically identify nearby:
+- Hospitals.
+- Clinics.
+- Police stations.
+- Emergency services.
+- Public facilities.
+- Other relevant civic services.
+
+Requirements:
+- Use actual current location.
+- Allow custom search radius.
+- Provide multiple radius options.
+- Display actual distance.
+- Show facility name and address.
+- Show contact number when available.
+- Display results on an interactive map.
+- Provide navigation directions.
+- Allow users to refresh nearby results.
+- Update results when location changes.
+
+Never use hardcoded locations or fabricated distances.
+
+### 9. Smart Mobility — COMPLETE REPAIR AND IMPLEMENTATION
+
+The existing Smart Mobility feature in Nagar AI is not working correctly.
+
+I want this feature fully repaired and implemented, not merely redesigned.
+
+Make Smart Mobility a functional citizen service that uses actual live location and real available mobility information.
+
+Implement:
+- Live location detection.
+- Current-location identification.
+- Destination search.
+- Nearby mobility and transport facilities.
+- Route discovery.
+- Distance calculation using actual route data.
+- Estimated travel time from a routing service.
+- Available transport options based on real data.
+- Interactive map with route visualization.
+- Custom search radius.
+- Different radius selection options.
+- Refresh location.
+- Recalculate route when location or destination changes.
+- Clear route and start a new search.
+- Location permission management.
+- Loading and error states.
+
+The assistant should explain available mobility options and relevant nearby services to the user.
+
+If live traffic or public transport data is available through an integrated provider, display it with its actual update status.
+
+Do not fabricate buses, transport availability, traffic conditions, distances or travel times.
+
+If a required external API is missing, identify and configure the required integration rather than displaying fake information.
+
+### 10. Citizen Rewards and Achievement System
+
+Implement the same Seva AI reward system discussed previously.
+
+Include:
+- Points for valid civic participation.
+- Points for verified reports.
+- Recognition for constructive participation.
+- Achievement badges.
+- Citizen leaderboard.
+- Reward history.
+- Points balance.
+- Achievement progress.
+- Citizen contribution statistics.
+
+Rules:
+- Award points only after the relevant action is verified.
+- Prevent duplicate reward claims.
+- Do not reward spam or false complaints.
+- Keep reward records in the database.
+- Display each citizen's actual reward balance.
+
+### 11. Citizen Notifications
+
+Implement real notifications for:
+- Complaint submission.
+- Complaint verification.
+- Officer assignment.
+- Complaint status changes.
+- Resolution.
+- Authority grievance updates.
+- Caregiver linking requests.
+- Caregiver permissions.
+- SOS alerts.
+- Emergency updates.
+- Rewards and achievements.
+
+Notifications must be associated with the correct authenticated user.
+
+# PART 2 — OFFICER PORTAL TRANSFORMATION
+## SEVA AI AUTHORITY PORTAL REFERENCE
+
+Completely remove the existing Nagar AI Officer Dashboard modules and replace them with the Seva AI Authority Portal architecture.
+
+Use the attached Seva AI Authority Portal screenshot as the navigation and structural reference.
+
+The new Officer Portal must contain these modules:
+
+### 1. Overview
+
+Display:
+- Total citizen complaints.
+- Pending complaints.
+- Verified complaints.
+- Assigned complaints.
+- In-progress complaints.
+- Resolved complaints.
+- Overdue complaints.
+- Active SOS alerts.
+- Department performance.
+- Officer workload.
+- Recent activities.
+- Emergency notifications.
+
+All values must come from actual database records.
+
+### 2. All Civic Reports
+
+Display all reports submitted by citizens.
+
+Include:
+- Complaint ID.
+- Citizen information according to role permissions.
+- Complaint category.
+- Description.
+- Uploaded photographs.
+- GPS location.
+- Submission date.
+- Verification status.
+- Assigned department.
+- Assigned officer.
+- Current status.
+- Resolution information.
+
+Add search, filters, sorting and pagination.
+
+Every citizen report must appear here automatically.
+
+### 3. AI Verification
+
+Implement an AI-assisted report verification module.
+
+It should:
+- Analyze submitted complaint descriptions.
+- Inspect uploaded images where supported.
+- Identify incomplete reports.
+- Detect possible duplicate reports.
+- Identify suspicious submissions for human review.
+- Recommend relevant departments.
+- Provide explainable verification results.
+
+AI verification must assist authorized officers, not automatically reject legitimate complaints without human review.
+
+### 4. SOS Alerts
+
+Display real emergency alerts generated by citizen SOS activation.
+
+Include:
+- Citizen information according to permissions.
+- Emergency timestamp.
+- Live location.
+- Location on map.
+- Verified caregiver information where authorized.
+- Emergency status.
+- Assigned response personnel.
+- Alert acknowledgement.
+- Response updates.
+- Resolution records.
+
+The Authority Portal must receive SOS alerts in real time.
+
+### 5. Medical Help
+
+Implement the Medical Help module.
+
+Include:
+- Emergency medical assistance requests.
+- Citizen-reported medical emergencies.
+- Nearby hospital information where available.
+- Location-based hospital discovery.
+- Emergency request status.
+- Response tracking.
+- Relevant emergency contact information.
+
+Use real location and verified facility data.
+
+### 6. Officer Assignment
+
+Implement complete department and officer assignment.
+
+Include:
+- Department management.
+- Officer management.
+- Complaint assignment.
+- Reassignment.
+- Workload visibility.
+- Assignment timestamps.
+- Assignment history.
+- Officer status.
+- Department-based filtering.
+
+Only authorized administrators should manage assignment permissions.
+
+### 7. Action Center & SLA
+
+Implement a centralized action management system.
+
+Include:
+- Pending actions.
+- Assigned tasks.
+- Investigation updates.
+- Priority levels.
+- SLA deadlines.
+- Resolution deadlines.
+- Task status.
+- Escalation indicators.
+- Action history.
+
+SLA deadlines must be configurable by complaint category and department.
+
+### 8. Resolution & Proof
+
+Implement a proper complaint resolution system.
+
+Officers should be able to:
+- Update complaint status.
+- Enter investigation details.
+- Upload before-and-after photographs.
+- Upload resolution evidence.
+- Add resolution notes.
+- Record completion timestamps.
+- Submit resolution for verification.
+
+Citizens must receive the resolution update in their own dashboard.
+
+### 9. Citizen Complaints
+
+Create a dedicated module for authority-related grievances submitted by citizens.
+
+Include:
+- Officer-related complaints.
+- Department grievances.
+- Delayed responses.
+- Service-quality issues.
+- Grievance investigation.
+- Authorized assignment.
+- Status tracking.
+- Resolution and evidence.
+
+Restrict access to confidential grievances based on administrative permissions.
+
+### 10. Department Performance
+
+Display:
+- Department-wise complaints.
+- Resolution rates.
+- Pending workload.
+- Average resolution time.
+- SLA compliance.
+- Overdue cases.
+- Department comparisons.
+
+All charts must use actual database information.
+
+### 11. Officer Leaderboard
+
+Implement officer performance tracking.
+
+Include:
+- Resolved complaints.
+- Resolution time.
+- SLA compliance.
+- Citizen feedback where available.
+- Workload.
+- Performance indicators.
+
+Use transparent and configurable ranking criteria. Do not use fabricated performance statistics.
+
+### 12. SLA Escalations
+
+Automatically identify overdue complaints.
+
+Include:
+- Escalation alerts.
+- Deadline tracking.
+- Escalation history.
+- Department notifications.
+- Authorized supervisor notifications.
+- Escalation status.
+- Action taken.
+
+Escalations must be generated from actual configured deadlines.
+
+### 13. Notifications
+
+Provide real-time notifications for:
+- New complaints.
+- New SOS alerts.
+- New assignments.
+- Reassigned complaints.
+- Approaching SLA deadlines.
+- Overdue cases.
+- Resolution submissions.
+- Citizen grievances.
+- Emergency updates.
+
+### 14. Analytics & Charts
+
+Create an analytics dashboard with:
+- Complaint trends.
+- Department performance.
+- Category-wise reports.
+- Geographic complaint distribution.
+- Resolution statistics.
+- SLA compliance.
+- Officer performance.
+- Emergency response statistics.
+
+Support date filters and department filters.
+
+### 15. Security, Audit & SMS
+
+Implement:
+- Secure access control.
+- Audit logs.
+- Login history.
+- Role permissions.
+- Administrative activity records.
+- SMS notification integration.
+- Notification delivery status.
+- Security event tracking.
+- Data access history.
+
+Never expose confidential citizen information to unauthorized officers.
+
+### IMPORTANT EXCLUSIONS
+
+Do not add these modules:
+- Animal Rescue Hub.
+- Road Accidents.
+
+Remove them from the new navigation, dashboard cards, reports, categories, analytics and backend workflows.
+
+Do not accidentally reintroduce these modules through other dashboard sections.
+
+# PART 3 — ADMIN PORTAL
+
+Keep the Admin Portal and make it fully functional.
+
+The Admin Portal should have complete platform-level control.
+
+Implement:
+
+1. Citizen account management.
+2. Caregiver account management.
+3. Officer account management.
+4. Department management.
+5. Role and permission management.
+6. Complaint monitoring.
+7. Authority grievance monitoring.
+8. SOS monitoring.
+9. Medical assistance monitoring.
+10. Caregiver verification.
+11. Caregiver-citizen relationship management.
+12. Google authentication configuration.
+13. Notification management.
+14. Reward configuration.
+15. SLA configuration.
+16. Officer assignment controls.
+17. Audit logs.
+18. Platform analytics.
+19. Security settings.
+20. API and integration health monitoring.
+
+Admin should be able to manage the entire platform while respecting privacy and access-control restrictions.
+
+# PART 4 — CAREGIVER DASHBOARD
+
+Preserve the existing Nagar AI Caregiver Dashboard and integrate it properly with the transformed Citizen Dashboard.
+
+Requirements:
+
+- Caregiver login.
+- Caregiver profile.
+- Verified linked citizens.
+- Citizen-specific dashboard access.
+- Permission-based information access.
+- Live location access only when authorized.
+- SOS notifications.
+- Direct calling to the linked citizen.
+- Direct calling from citizen to caregiver.
+- Emergency contact details.
+- Caregiver linking requests.
+- Accept/reject linking requests.
+- Permission management.
+- Location-sharing status.
+- Notification history.
+- Emergency history.
+- Secure unlinking.
+
+The caregiver dashboard must only display information belonging to citizens who have explicitly authorized that caregiver.
+
+One caregiver may be linked to multiple citizens only through separately verified and authorized relationships.
+
+# PART 5 — GOOGLE SIGN-IN AND AUTHENTICATION
+
+Implement Sign in with Google for these four portals:
+
+1. Citizen Portal.
+2. Caregiver Portal.
+3. Officer Portal.
+4. Admin Portal.
+
+Requirements:
+- Google sign-in button.
+- Proper OAuth integration.
+- Secure session handling.
+- Role-based routing.
+- Account creation.
+- Existing account detection.
+- Logout.
+- Session expiry handling.
+- Protected routes.
+
+IMPORTANT:
+
+Google authentication must not allow users to choose privileged roles for themselves.
+
+- Citizen accounts must access Citizen Portal.
+- Caregiver accounts must access Caregiver Portal.
+- Officer accounts must be created or authorized by an administrator.
+- Admin accounts must be explicitly authorized by a super-admin.
+
+A Google account alone must never grant Officer or Admin privileges.
+
+Keep existing login functionality if it works, but ensure the Google sign-in option is properly implemented for all four portals.
+
+# PART 6 — CONNECT ALL FOUR DASHBOARDS
+
+This is one of the most important requirements.
+
+Create a properly connected backend architecture.
+
+<CONNECTED WORKFLOW>
+
+CITIZEN PORTAL
+    |
+    | Civic reports and authority grievances
+    |
+    v
+OFFICER / AUTHORITY PORTAL
+    |
+    | Assignment, verification, investigation
+    | Resolution, proof and SLA updates
+    |
+    v
+CITIZEN PORTAL
+    |
+    | Status updates and notifications
+    |
+    v
+CITIZEN REWARDS
+
+CITIZEN PORTAL
+    |
+    | Verified linking and permissions
+    |
+    v
+CAREGIVER PORTAL
+    |
+    | Authorized live location and SOS alerts
+    |
+    v
+CITIZEN EMERGENCY SUPPORT
+
+ADMIN PORTAL
+    |
+    | Controls and monitors all authorized modules
+    |
+    v
+ALL FOUR PORTALS
+
+</CONNECTED WORKFLOW>
+
+Every dashboard must use the same properly structured backend and database.
+
+Implement:
+- Shared data models.
+- Correct user IDs.
+- Citizen-specific records.
+- Caregiver relationship records.
+- Department records.
+- Officer assignment records.
+- Complaint records.
+- SOS event records.
+- Notification records.
+- Reward records.
+- Audit records.
+
+Use real-time database listeners or reliable event-based synchronization where appropriate.
+
+Do not use separate disconnected dummy datasets for individual dashboards.
+
+# PART 7 — NAGAR SAATHI AI INTEGRATION
+
+Preserve Nagar Saathi AI as the central intelligent assistant.
+
+It should understand requests related to:
+- Civic complaint reporting.
+- Complaint tracking.
+- Smart Mobility.
+- Nearby hospitals.
+- Nearby police stations.
+- Live location.
+- Personal safety.
+- SOS activation.
+- Caregiver calling.
+- Website navigation.
+- Citizen dashboard assistance.
+
+Examples:
+
+"Take me to my civic reports."
+
+"Show my pending complaints."
+
+"Find hospitals near my current location."
+
+"Help me activate SOS."
+
+"Call my verified caregiver."
+
+"Take me to Smart Mobility."
+
+"Show my complaint status."
+
+The assistant must execute actual website actions through authorized backend functions.
+
+Preserve the previously requested ElevenLabs integration, speech-to-text, text-to-speech and AI API error-handling improvements.
+
+Do not break the existing Nagar Saathi voice assistant while modifying the dashboards.
+
+# PART 8 — LIVE LOCATION AND CUSTOM RADIUS ARCHITECTURE
+
+Use one consistent location service throughout the application.
+
+Implement:
+- Browser geolocation.
+- Permission management.
+- Accurate coordinate capture.
+- Location accuracy display.
+- Location refresh.
+- Location updates.
+- Custom search radius.
+- Multiple radius options.
+- Distance calculation.
+- Nearby facility discovery.
+- Interactive map updates.
+- Routing integration.
+- Error handling.
+
+The custom radius selection must actually change the backend search area and returned results.
+
+Do not simply change the displayed radius label.
+
+Do not request continuous background location tracking without appropriate permissions and user consent.
+
+For caregiver location access, follow the citizen's verified permissions.
+
+# PART 9 — DATABASE AND BACKEND REQUIREMENTS
+
+Audit the existing backend before making changes.
+
+Requirements:
+- Preserve existing user records.
+- Preserve verified caregiver relationships.
+- Preserve existing SOS records.
+- Preserve existing authentication configurations.
+- Migrate existing records safely if the schema changes.
+- Implement appropriate database relationships.
+- Enforce role-based authorization on the server.
+- Validate every API request.
+- Add proper error handling.
+- Avoid duplicate submissions.
+- Prevent unauthorized data access.
+- Add audit logging.
+- Implement reliable notification delivery.
+
+If Firebase/Firestore is already configured, audit and extend the existing configuration instead of creating an unnecessary second database.
+
+Use secure database rules for every collection.
+
+Do not expose secrets or privileged operations in frontend code.
+
+# PART 10 — DESIGN AND USER EXPERIENCE
+
+Use Seva AI's dashboard organization as the reference.
+
+Maintain a clean, professional municipal-governance interface.
+
+Citizen Dashboard:
+- Simple and accessible.
+- Large controls.
+- Clear complaint cards.
+- Visible SOS functionality.
+- Easy-to-use location tools.
+- Easy caregiver access.
+- Clear rewards and notifications.
+
+Officer Portal:
+- Professional authority dashboard.
+- Structured sidebar navigation.
+- Complaint management tables.
+- Department and officer management.
+- Analytics and charts.
+- SLA monitoring.
+- Emergency alerts.
+
+Admin Portal:
+- Comprehensive management interface.
+- Secure administration.
+- Clear user and role management.
+
+Caregiver Portal:
+- Simple, accessible and safety-focused.
+- Clearly show linked citizens and permissions.
+
+All dashboards must be responsive on mobile, tablet and desktop.
+
+# PART 11 — COMPLETE FUNCTIONAL TESTING
+
+Do not finish after changing the UI.
+
+Test the actual workflows using separate test accounts for Citizen, Caregiver, Officer and Admin.
+
+MANDATORY TESTS:
+
+1. Google sign-in for all four portals.
+2. Correct role-based routing.
+3. Citizen account creation.
+4. Citizen complaint submission.
+5. Photograph upload.
+6. GPS location capture.
+7. Custom radius selection.
+8. Nearby hospitals.
+9. Nearby police stations.
+10. Smart Mobility destination search.
+11. Smart Mobility route calculation.
+12. Smart Mobility location refresh.
+13. Citizen SOS activation.
+14. Verified caregiver notification.
+15. Direct caregiver calling.
+16. Caregiver linking request.
+17. Caregiver verification.
+18. Permission acceptance and revocation.
+19. Authorized live location access.
+20. Officer receives citizen reports.
+21. AI report verification.
+22. Officer assignment.
+23. Action Center updates.
+24. SLA deadline tracking.
+25. Resolution evidence upload.
+26. Citizen receives resolution notification.
+27. Authority grievance submission.
+28. Admin receives grievances.
+29. Reward points update after valid actions.
+30. Analytics reflect actual data.
+31. Nagar Saathi AI navigation.
+32. ElevenLabs voice integration.
+33. Speech-to-text.
+34. Text-to-speech.
+35. Notification delivery.
+36. Role-based security.
+37. Mobile responsiveness.
+
+Test using multiple accounts to verify that records do not leak between users.
+
+# PART 12 — STRICT COMPLETION REQUIREMENTS
+
+Do not:
+- Create a visual-only prototype.
+- Add fake dashboard statistics.
+- Use hardcoded nearby places.
+- Use fake live locations.
+- Use simulated SOS alerts.
+- Create disconnected complaint systems.
+- Create non-functional navigation buttons.
+- Replace real API functionality with mock responses.
+- Remove the existing verified caregiver system.
+- Remove the existing SOS functionality.
+- Add Animal Rescue Hub.
+- Add Road Accidents.
+- Give citizens unauthorized officer or admin access.
+- Claim successful integration without testing.
+
+If an external API, Google OAuth configuration, SMS provider or mapping service is missing, clearly identify the required configuration and do not pretend the integration is operational.
+
+## FINAL ACCEPTANCE CRITERIA
+
+The project is complete only when:
+
+1. Nagar AI Citizen Dashboard has the Seva AI Citizen Dashboard features.
+2. Nagar AI Officer Portal has the Seva AI Authority Portal features.
+3. Animal Rescue Hub and Road Accidents are completely excluded.
+4. Existing verified caregiver linking and permissions remain functional.
+5. Citizen SOS and direct caregiver calling work.
+6. Citizen and Caregiver Dashboards are correctly linked.
+7. Citizen reports appear in the Officer Portal.
+8. Officer updates appear in the Citizen Portal.
+9. Admin Portal manages all authorized platform functions.
+10. Google sign-in works for all four portals with secure role restrictions.
+11. Smart Mobility works with real location and routing data.
+12. Nearby places are detected using actual live location.
+13. Custom radius changes actual search results.
+14. Nagar Saathi AI works with text and voice.
+15. Rewards and notifications use actual database records.
+16. Every important button and workflow is tested.
+
+**FINAL INSTRUCTION: Perform a complete audit of the existing Nagar AI codebase, implement the entire transformation, connect all dashboards through the real backend, repair existing broken features, test every workflow and provide a detailed implementation report.**
+
+Do not stop at the first working screen. Continue until every implementable feature is connected, functional, secure and tested.

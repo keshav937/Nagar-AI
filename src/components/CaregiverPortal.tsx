@@ -1,15 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import L from 'leaflet';
 import {
   ShieldAlert,
   MapPin,
   KeyRound,
   Bell,
   CheckCircle2,
+  XCircle,
   Clock,
   PhoneCall,
   HeartPulse,
   Lock,
   RefreshCw,
+  Unlink,
 } from 'lucide-react';
 import type { AuthUser, CaregiverPortalData } from '../types.ts';
 import { apiFetch } from '../api/client.ts';
@@ -20,6 +23,50 @@ interface CaregiverPortalProps {
   onClearInitialToken?: () => void;
 }
 
+const CaregiverMapPreview: React.FC<{
+  lat: number;
+  lng: number;
+  label: string;
+  isEmergency?: boolean;
+}> = ({ lat, lng, label, isEmergency }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+    const map = L.map(containerRef.current, { zoomControl: true }).setView([lat, lng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+    L.circleMarker([lat, lng], {
+      radius: 9,
+      color: isEmergency ? '#dc2626' : '#047857',
+      fillColor: isEmergency ? '#ef4444' : '#10b981',
+      fillOpacity: 0.9,
+      weight: 3,
+    })
+      .bindPopup(label)
+      .addTo(map)
+      .openPopup();
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [lat, lng, label, isEmergency]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full h-52 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 mt-2"
+    />
+  );
+};
+
 export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
   user,
   initialAccessToken,
@@ -28,6 +75,7 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
   const [data, setData] = useState<CaregiverPortalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [verificationCode, setVerificationCode] = useState('');
+  const [inlineCodes, setInlineCodes] = useState<Record<string, string>>({});
   const [tokenInput, setTokenInput] = useState(initialAccessToken || '');
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -92,6 +140,47 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
     }
   };
 
+  const handleRespondRelationship = async (relationshipId: string, action: 'accept' | 'reject') => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const code = inlineCodes[relationshipId] || verificationCode;
+      const res = await apiFetch<{ ok: boolean; status: string }>(
+        `/api/caregiver/relationships/${relationshipId}/respond`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ action, verificationCode: code }),
+        }
+      );
+      setMsg({
+        type: 'ok',
+        text:
+          action === 'reject'
+            ? 'Caregiver invitation declined.'
+            : `Invitation verified (${res.status.replace(/_/g, ' ')}). Citizen will now issue final approval.`,
+      });
+      await loadPortal();
+    } catch (err) {
+      setMsg({ type: 'err', text: err instanceof Error ? err.message : 'Unable to process caregiver response.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUnlink = async (relationshipId: string, citizenName: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await apiFetch(`/api/caregiver/relationships/${relationshipId}/unlink`, { method: 'POST' });
+      setMsg({ type: 'ok', text: `Disconnected from ${citizenName}'s safety network.` });
+      await loadPortal();
+    } catch (err) {
+      setMsg({ type: 'err', text: err instanceof Error ? err.message : 'Unlink failed.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRedeemToken = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -127,7 +216,7 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
             Authorized Citizen Safety &amp; SOS Monitor
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Registered Mobile: <span className="font-mono">{user.phone || 'Not set'}</span> · Access is strictly limited to citizens who have approved you.
+            Registered Mobile: <span className="font-mono">{user.phone || 'Not set'}</span> · Access is strictly filtered by each citizen&apos;s active permissions.
           </p>
         </div>
         <button
@@ -163,7 +252,7 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
             Step 1: Verify Caregiver Invitation Code
           </h3>
           <p className="text-xs text-slate-500">
-            Enter the 6-digit verification code provided by the citizen who added your mobile number ({user.phone}).
+            Enter the 6-digit verification code provided by the citizen who added your mobile number ({user.phone || 'add phone in profile'}).
           </p>
           <div className="flex gap-2">
             <input
@@ -193,7 +282,7 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
             Step 2: Redeem Caregiver Access Token
           </h3>
           <p className="text-xs text-slate-500">
-            Paste an expiring Caregiver Access Token shared by an approved citizen to unlock their live location &amp; SOS feed.
+            Paste an expiring Caregiver Access Token shared by an approved citizen to unlock their authorized feed.
           </p>
           <div className="flex gap-2">
             <input
@@ -229,7 +318,12 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
           </div>
         ) : (
           data.linkedCitizens.map((c) => {
-            const activeAlert = c.sosAlerts?.find((s) => s.status === 'active');
+            const activeAlert = c.sosAlerts?.find((s) => s.status === 'active' || s.status === 'acknowledged');
+            const perms = c.permissions || {
+              canViewLocation: true,
+              canReceiveSos: true,
+              canViewProfile: true,
+            };
             return (
               <div
                 key={c.relationshipId}
@@ -245,48 +339,121 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
                       {c.citizenPhone ? ` · ${c.citizenPhone}` : ''}
                     </div>
                   </div>
-                  {c.authorized && c.citizenPhone && (
-                    <a
-                      href={`tel:${c.citizenPhone}`}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700"
+                  <div className="flex flex-wrap items-center gap-2">
+                    {c.authorized && c.citizenPhone && (
+                      <a
+                        href={`tel:${c.citizenPhone}`}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                      >
+                        <PhoneCall className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                        Call Citizen
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleUnlink(c.relationshipId, c.citizenName)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-red-200 dark:border-red-900 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
                     >
-                      <PhoneCall className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
-                      Call Citizen
-                    </a>
-                  )}
+                      <Unlink className="w-3.5 h-3.5" />
+                      Unlink
+                    </button>
+                  </div>
                 </div>
 
                 {!c.authorized ? (
-                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400 flex items-center gap-2">
-                    <Lock className="w-4 h-4 shrink-0" />
-                    <span>
-                      {c.status === 'pending_verification'
-                        ? 'Pending verification: Enter the 6-digit verification code above to verify your identity.'
-                        : 'Identity verified — waiting for the citizen to grant final approval & issue your Caregiver Access Token.'}
-                    </span>
+                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Lock className="w-4 h-4 shrink-0" />
+                      <span>
+                        {c.status === 'pending_verification'
+                          ? 'Pending verification: Enter the 6-digit code shared by this citizen to accept, or decline the invitation.'
+                          : 'Identity verified — waiting for the citizen to grant final approval & issue your Caregiver Access Token.'}
+                      </span>
+                    </div>
+                    {c.status === 'pending_verification' && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={inlineCodes[c.relationshipId] || ''}
+                          onChange={(e) =>
+                            setInlineCodes((prev) => ({ ...prev, [c.relationshipId]: e.target.value }))
+                          }
+                          placeholder="6-digit code"
+                          className="w-36 px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleRespondRelationship(c.relationshipId, 'accept')}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Accept &amp; Verify
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleRespondRelationship(c.relationshipId, 'reject')}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-900 text-red-600 cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Decline
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {activeAlert && (
-                      <div className="p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 space-y-1">
+                    {/* Granted Permissions Summary */}
+                    <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-slate-600 dark:text-slate-300 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                      <span className="font-semibold text-slate-500">Permissions Granted:</span>
+                      <span className={perms.canViewLocation ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}>
+                        GPS Location: {perms.canViewLocation ? 'Allowed' : 'Restricted'}
+                      </span>
+                      <span>·</span>
+                      <span className={perms.canReceiveSos ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}>
+                        SOS Alerts: {perms.canReceiveSos ? 'Allowed' : 'Restricted'}
+                      </span>
+                      <span>·</span>
+                      <span className={perms.canViewProfile ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}>
+                        Medical Profile: {perms.canViewProfile ? 'Allowed' : 'Restricted'}
+                      </span>
+                    </div>
+
+                    {perms.canReceiveSos && activeAlert && (
+                      <div className="p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 space-y-2">
                         <div className="text-xs font-mono font-bold text-red-700 dark:text-red-300 flex items-center gap-1.5">
                           <ShieldAlert className="w-4 h-4" />
-                          ACTIVE EMERGENCY SOS · {activeAlert.incident_code}
+                          ACTIVE EMERGENCY SOS · {activeAlert.incident_code} ({activeAlert.status.toUpperCase()})
                         </div>
                         <div className="text-sm font-semibold text-red-950 dark:text-red-100">
                           {activeAlert.trigger_address || 'Coordinates logged'} ({activeAlert.location_status} GPS)
                         </div>
                         <div className="text-xs text-red-800 dark:text-red-300">{activeAlert.notes}</div>
+                        {activeAlert.response_notes && (
+                          <div className="text-xs font-medium text-red-900 dark:text-red-200 bg-white/70 dark:bg-black/20 p-2 rounded">
+                            Responder Update: {activeAlert.response_notes}
+                          </div>
+                        )}
                         {activeAlert.trigger_lat !== null && activeAlert.trigger_lng !== null && (
-                          <a
-                            href={`https://www.openstreetmap.org/?mlat=${activeAlert.trigger_lat}&mlon=${activeAlert.trigger_lng}#map=16/${activeAlert.trigger_lat}/${activeAlert.trigger_lng}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-200 underline pt-1"
-                          >
-                            <MapPin className="w-3.5 h-3.5" />
-                            Open SOS Location on Map
-                          </a>
+                          <>
+                            <CaregiverMapPreview
+                              lat={activeAlert.trigger_lat}
+                              lng={activeAlert.trigger_lng}
+                              label={`SOS ${activeAlert.incident_code} — ${c.citizenName}`}
+                              isEmergency
+                            />
+                            <a
+                              href={`https://www.openstreetmap.org/?mlat=${activeAlert.trigger_lat}&mlon=${activeAlert.trigger_lng}#map=16/${activeAlert.trigger_lat}/${activeAlert.trigger_lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-200 underline pt-1"
+                            >
+                              <MapPin className="w-3.5 h-3.5" />
+                              Open SOS Location on OpenStreetMap
+                            </a>
+                          </>
                         )}
                       </div>
                     )}
@@ -297,7 +464,11 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
                           <MapPin className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                           Live Safety Location Status
                         </div>
-                        {c.activeSession ? (
+                        {!perms.canViewLocation ? (
+                          <div className="text-slate-500">
+                            Citizen has restricted live GPS location visibility for this link.
+                          </div>
+                        ) : c.activeSession ? (
                           <>
                             <div className="text-emerald-700 dark:text-emerald-400 font-semibold">
                               Safety Session ACTIVE (expires {new Date(c.activeSession.expires_at).toLocaleTimeString()})
@@ -316,14 +487,21 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
                               </div>
                             )}
                             {c.activeSession.last_lat !== null && c.activeSession.last_lng !== null && (
-                              <a
-                                href={`https://www.openstreetmap.org/?mlat=${c.activeSession.last_lat}&mlon=${c.activeSession.last_lng}#map=16/${c.activeSession.last_lat}/${c.activeSession.last_lng}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-block text-emerald-700 dark:text-emerald-400 font-semibold hover:underline pt-1"
-                              >
-                                View Citizen Pin on OpenStreetMap →
-                              </a>
+                              <>
+                                <CaregiverMapPreview
+                                  lat={c.activeSession.last_lat}
+                                  lng={c.activeSession.last_lng}
+                                  label={`${c.citizenName} Live Safety Pin`}
+                                />
+                                <a
+                                  href={`https://www.openstreetmap.org/?mlat=${c.activeSession.last_lat}&mlon=${c.activeSession.last_lng}#map=16/${c.activeSession.last_lat}/${c.activeSession.last_lng}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-block text-emerald-700 dark:text-emerald-400 font-semibold hover:underline pt-1"
+                                >
+                                  View Citizen Pin on OpenStreetMap →
+                                </a>
+                              </>
                             )}
                           </>
                         ) : (
@@ -338,7 +516,11 @@ export const CaregiverPortal: React.FC<CaregiverPortalProps> = ({
                           <HeartPulse className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                           Emergency Medical Profile
                         </div>
-                        {c.emergencyProfile ? (
+                        {!perms.canViewProfile ? (
+                          <div className="text-slate-500">
+                            Citizen has restricted emergency medical profile visibility for this link.
+                          </div>
+                        ) : c.emergencyProfile ? (
                           <div className="space-y-1 text-slate-600 dark:text-slate-300">
                             <div>Blood Group: {c.emergencyProfile.blood_group || 'Not specified'}</div>
                             <div>Emergency Phone: {c.emergencyProfile.emergency_phone || 'Not specified'}</div>

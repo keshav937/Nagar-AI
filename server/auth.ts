@@ -235,3 +235,47 @@ export function recordAudit(
     new Date().toISOString()
   );
 }
+
+export function getGoogleAuthConfigStatus(): {
+  configured: boolean;
+  clientIdSet: boolean;
+  clientSecretSet: boolean;
+  superAdminEmail: string;
+} {
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim() || '';
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || '';
+  return {
+    configured: Boolean(clientId && clientSecret),
+    clientIdSet: Boolean(clientId),
+    clientSecretSet: Boolean(clientSecret),
+    superAdminEmail: (process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase(),
+  };
+}
+
+export function signOAuthState(payload: { portal: string; nonce: string; origin: string }): string {
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const body = Buffer.from(JSON.stringify({ ...payload, exp })).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+export function verifyOAuthState(state: string): { portal: string; nonce: string; origin: string } | null {
+  try {
+    const parts = state.split('.');
+    if (parts.length !== 2) return null;
+    const [body, sig] = parts;
+    const expected = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!parsed.exp || parsed.exp < Math.floor(Date.now() / 1000)) return null;
+    return {
+      portal: String(parsed.portal || 'citizen'),
+      nonce: String(parsed.nonce || ''),
+      origin: String(parsed.origin || ''),
+    };
+  } catch {
+    return null;
+  }
+}

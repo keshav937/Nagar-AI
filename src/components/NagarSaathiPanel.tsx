@@ -200,15 +200,31 @@ export const NagarSaathiPanel: React.FC<NagarSaathiPanelProps> = ({
   const contextualPrompts =
     language === 'hi'
       ? activeModule === 'mobility'
-        ? ['मेरे पास साझा ऑटो खोजें', 'कनॉट प्लेस के लिए रूट दिखाएं']
-        : activeModule === 'waste'
-          ? ['सबसे नज़दीकी कचरा बिन कहाँ है?', 'गीला और सूखा कचरा कैसे अलग करें?']
-          : ['मेरे पास सड़क पर गड्ढे की शिकायत दर्ज करें', 'मेरी शिकायत की स्थिति क्या है?']
+        ? ['मेरे पास बस या मेट्रो स्टॉप खोजें', 'कनॉट प्लेस के लिए रोड रूट दिखाएं']
+        : activeModule === 'medical'
+          ? ['मेरे पास सबसे नज़दीकी अस्पताल दिखाएं', 'चिकित्सा सहायता के लिए मदद मांगें']
+          : activeModule === 'safety'
+            ? ['महिला सुरक्षा और SOS कैसे काम करता है?', 'सुरक्षा केयरगिवर कैसे जोड़ें?']
+            : activeModule === 'waste'
+              ? ['सबसे नज़दीकी कचरा बिन कहाँ है?', 'गीला और सूखा कचरा कैसे अलग करें?']
+              : [
+                  'मेरे पास सड़क पर गड्ढे की शिकायत दर्ज करें',
+                  'सबसे नज़दीकी अस्पताल और पुलिस स्टेशन खोजें',
+                  'मेरे रिवॉर्ड पॉइंट्स और शिकायत स्थिति क्या है?',
+                ]
       : activeModule === 'mobility'
-        ? ['Find shared autos near me', 'Show transport options to Connaught Place']
-        : activeModule === 'waste'
-          ? ['Where is the nearest garbage bin?', 'Explain wet and dry waste segregation']
-          : ['Report a pothole near my current location', 'What is happening with my complaint?'];
+        ? ['Find nearby metro & bus hubs', 'Show road route to Connaught Place']
+        : activeModule === 'medical'
+          ? ['Find nearest hospitals around my GPS', 'Open medical assistance request']
+          : activeModule === 'safety'
+            ? ['How do I add a verified caregiver?', 'Open Women Safety & SOS']
+            : activeModule === 'waste'
+              ? ['Where is the nearest garbage bin?', 'Explain wet and dry waste segregation']
+              : [
+                  'Report a pothole near my current location',
+                  'Find nearby hospitals and medical help',
+                  'Check my reward points and complaint status',
+                ];
 
   return (
     <>

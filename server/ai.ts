@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db, haversineKm } from './db.ts';
 import type { AuthUser } from './auth.ts';
 import { fetchNearbyFacilities } from './places.ts';
+import { searchMobilityDestination, computeRealRoute, fetchNearbyMobilityHubs } from './mobility.ts';
 
 const GEMINI_MODEL = 'gemini-4-hydrogen';
 
@@ -95,7 +96,7 @@ Description: ${params.description}
 Nearby Existing Reports within 600m: ${JSON.stringify(nearbyMatches)}
 
 Assess:
-1. Best matching civic category
+1. Best matching civic category strictly from: ["Potholes and damaged roads", "Garbage and waste management", "Blocked drains and waterlogging", "Traffic problems and road obstructions", "Street lighting and electrical faults", "Other civic infrastructure problems"]. NEVER output Animal Rescue or Road Accidents.
 2. Whether any attached image is relevant & clear (if no image, set imageQuality to "not_provided" and imageRelevant to true)
 3. Severity estimate (low, medium, high, critical)
 4. Recommended municipal department (Public Works & Roads, Solid Waste & Sanitation, Street Lighting & Electrical, Water Supply & Drainage, Urban Transport Cell)
@@ -110,7 +111,7 @@ Assess:
     contents: { parts },
     config: {
       systemInstruction:
-        'You are a municipal AI triage analyst. Never automatically mark an uncertain report as verified; always require human authority review.',
+        'You are a municipal AI triage analyst for NAGAR AI. Never automatically mark an uncertain report as verified; always require human authority review. Never categorize reports as Animal Rescue or Road Accidents.',
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -317,6 +318,54 @@ const saathiTools: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'getMyCaregivers',
+    description: 'Return the authenticated citizen linked caregivers (names, phone numbers, permissions, and verification status).',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'getAuthorityGrievances',
+    description: 'List authority/officer grievances filed by this citizen and their review status.',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'getMyMedicalRequests',
+    description: 'List medical assistance requests submitted by this citizen and their dispatch status.',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: 'createMedicalAssistanceRequest',
+    description:
+      'Create a citizen Medical Assistance Request sent to Authority Medical Help. NEVER set confirmed=true unless the user explicitly confirmed the read-back details.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        requestType: { type: Type.STRING, description: 'e.g., Ambulance Dispatch, First Aid Support, Emergency Trauma Help, Clinic Escort' },
+        urgency: { type: Type.STRING, description: 'normal, urgent, or critical' },
+        description: { type: Type.STRING },
+        selectedFacilityName: { type: Type.STRING },
+        confirmed: { type: Type.BOOLEAN },
+      },
+      required: ['requestType', 'urgency', 'description', 'confirmed'],
+    },
+  },
+  {
+    name: 'getMobilityRoute',
+    description: 'Compute a real road route, distance, and travel time from user current GPS to a named destination using Nominatim and OSRM, plus nearby transit hubs.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        destination: { type: Type.STRING },
+        mode: { type: Type.STRING, description: 'driving, foot, or cycling' },
+      },
+      required: ['destination'],
+    },
+  },
+  {
+    name: 'triggerSosGuidance',
+    description: 'Open the Women Safety & Emergency SOS confirmation screen so the citizen can confirm SOS activation safely.',
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
     name: 'navigateApp',
     description: 'Navigate the NAGAR AI user interface to a specific section.',
     parameters: {
@@ -324,7 +373,7 @@ const saathiTools: FunctionDeclaration[] = [
       properties: {
         destination: {
           type: Type.STRING,
-          description: 'One of: overview, civic, mobility, waste, safety, medical, map, notifications, profile',
+          description: 'One of: overview, civic, grievances, medical, nearby, mobility, safety, caregivers, rewards, notifications, profile, waste, map',
         },
       },
       required: ['destination'],
@@ -586,6 +635,170 @@ async function executeSaathiTool(
             eWaste: 'E-Waste Drop-off Hub — batteries, chargers, phones, bulbs, circuit boards.',
           },
         },
+      };
+    }
+
+    case 'getMyCaregivers': {
+      if (ctx.user.role !== 'citizen') {
+        return { result: { message: 'Caregiver links belong to Citizen accounts.' } };
+      }
+      const rows = db
+        .prepare(
+          `SELECT caregiver_name, caregiver_phone, status, can_view_location, can_receive_sos, can_view_profile
+           FROM caregiver_relationships WHERE citizen_id = ? AND status != 'revoked' ORDER BY created_at DESC`
+        )
+        .all(ctx.user.id);
+      return { result: { count: rows.length, caregivers: rows } };
+    }
+
+    case 'getAuthorityGrievances': {
+      if (ctx.user.role !== 'citizen') {
+        return { result: { message: 'Use Admin Portal to inspect platform grievances.' } };
+      }
+      const rows = db
+        .prepare(
+          `SELECT grievance_code, category, title, status, resolution_notes, updated_at
+           FROM authority_grievances WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 8`
+        )
+        .all(ctx.user.id);
+      return { result: { count: rows.length, grievances: rows } };
+    }
+
+    case 'getMyMedicalRequests': {
+      if (ctx.user.role !== 'citizen') {
+        return { result: { message: 'Use Authority Medical Help to view citizen medical requests.' } };
+      }
+      const rows = db
+        .prepare(
+          `SELECT request_code, request_type, urgency, selected_facility_name, status, assigned_officer_name, responder_notes, updated_at
+           FROM medical_requests WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 8`
+        )
+        .all(ctx.user.id);
+      return { result: { count: rows.length, medicalRequests: rows } };
+    }
+
+    case 'createMedicalAssistanceRequest': {
+      if (ctx.user.role !== 'citizen') {
+        return { result: { message: 'Medical assistance requests can only be submitted by Citizen accounts.' } };
+      }
+      if (typeof userLat !== 'number' || typeof userLng !== 'number') {
+        return {
+          result: {
+            status: 'needs_location',
+            message: 'GPS coordinates are required before submitting a Medical Assistance Request.',
+          },
+        };
+      }
+      const requestType = String(args.requestType || 'Medical Assistance');
+      const urgency = ['normal', 'urgent', 'critical'].includes(String(args.urgency)) ? String(args.urgency) : 'urgent';
+      const description = String(args.description || requestType);
+      const selectedFacilityName = String(args.selectedFacilityName || '');
+      const address = ctx.location?.address || `GPS (${userLat.toFixed(4)}, ${userLng.toFixed(4)})`;
+      const confirmed = Boolean(args.confirmed);
+
+      if (!confirmed) {
+        const preview = {
+          type: 'createMedicalAssistanceRequest',
+          requestType,
+          urgency,
+          description,
+          selectedFacilityName,
+          lat: userLat,
+          lng: userLng,
+          address,
+        };
+        return {
+          result: {
+            status: 'confirmation_required',
+            preview,
+            instruction: 'Read back these exact medical request details to the citizen and ask for confirmation.',
+          },
+          pendingAction: preview,
+        };
+      }
+
+      const id = `med-${crypto.randomUUID().slice(0, 8)}`;
+      const requestCode = `MED-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const nowIso = new Date().toISOString();
+
+      db.prepare(`
+        INSERT INTO medical_requests (
+          id, request_code, citizen_id, request_type, urgency, description,
+          lat, lng, address, selected_facility_name, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Submitted', ?, ?)
+      `).run(id, requestCode, ctx.user.id, requestType, urgency, description, userLat, userLng, address, selectedFacilityName, nowIso, nowIso);
+
+      db.prepare(`
+        INSERT INTO notifications (id, user_id, role_target, event_type, title, message, message_hi, related_id, is_read, created_at)
+        VALUES (?, ?, 'citizen', 'medical_request_submitted', ?, ?, ?, ?, 0, ?)
+      `).run(
+        `not-${crypto.randomUUID().slice(0, 8)}`,
+        ctx.user.id,
+        `Medical Request ${requestCode} Sent`,
+        `Your ${urgency} medical assistance request (${requestType}) was sent to Authority Medical Help.`,
+        `आपका मेडिकल सहायता अनुरोध (${requestCode}) अधिकारी पोर्टल को भेज दिया गया है।`,
+        id,
+        nowIso
+      );
+
+      return {
+        result: {
+          status: 'created',
+          medicalRequest: { id, requestCode, requestType, urgency, address, status: 'Submitted' },
+        },
+        navigationTarget: 'medical',
+      };
+    }
+
+    case 'getMobilityRoute': {
+      const destQuery = String(args.destination || '').trim();
+      const mode = (['driving', 'foot', 'cycling'].includes(String(args.mode)) ? String(args.mode) : 'driving') as
+        | 'driving'
+        | 'foot'
+        | 'cycling';
+      if (typeof userLat !== 'number' || typeof userLng !== 'number') {
+        return { result: { available: false, message: 'Live GPS coordinates are required to compute a route.' } };
+      }
+      if (!destQuery) {
+        const nearby = await fetchNearbyMobilityHubs(userLat, userLng, 5);
+        return { result: { hubsCount: nearby.hubs.length, hubs: nearby.hubs.slice(0, 5), error: nearby.error } };
+      }
+      const searchRes = await searchMobilityDestination(destQuery, userLat, userLng);
+      const top = searchRes.results[0];
+      if (!top) {
+        return { result: { found: false, message: `No matching destination found for "${destQuery}".`, error: searchRes.error } };
+      }
+      try {
+        const route = await computeRealRoute({
+          originLat: userLat,
+          originLng: userLng,
+          destLat: top.lat,
+          destLng: top.lng,
+          mode,
+        });
+        return {
+          result: {
+            found: true,
+            destinationName: top.name,
+            mode: route.mode,
+            distanceKm: route.distanceKm,
+            durationMin: route.durationMin,
+            source: route.source,
+            stepsPreview: route.steps.slice(0, 4),
+          },
+        };
+      } catch (err) {
+        return { result: { found: true, destinationName: top.name, routingError: err instanceof Error ? err.message : 'Routing failed.' } };
+      }
+    }
+
+    case 'triggerSosGuidance': {
+      return {
+        result: {
+          navigatedTo: 'safety',
+          guidance: 'Opened Women Safety & Emergency SOS panel. Confirm the SOS button to alert linked caregivers and responders, or call 112 immediately.',
+        },
+        navigationTarget: 'safety',
       };
     }
 

@@ -60,7 +60,7 @@ function buildOverpassQuery(lat: number, lng: number, radiusMeters: number, cate
     filters.push(`node["emergency"="yes"](around:${radiusMeters},${lat},${lng});`);
   }
 
-  return `[out:json][timeout:14];(${filters.join('')});out center 80;`;
+  return `[out:json][timeout:6];(${filters.join('')});out center 80;`;
 }
 
 function classifyOsmElement(tags: Record<string, string>): PublicFacility['category'] {
@@ -80,6 +80,111 @@ function formatOsmAddress(tags: Record<string, string>, lat: number, lng: number
     tags['addr:city'],
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(', ') : `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+interface NominatimPoi {
+  place_id: number;
+  osm_type?: string;
+  osm_id?: number;
+  lat: string;
+  lon: string;
+  name?: string;
+  display_name?: string;
+  type?: string;
+  class?: string;
+  extratags?: Record<string, string>;
+}
+
+async function fetchViaNominatimViewbox(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  category: FacilityCategory
+): Promise<{ facilities: PublicFacility[]; error?: string }> {
+  const latDelta = radiusKm / 111.32;
+  const lngDelta = radiusKm / Math.max(20, 111.32 * Math.cos((lat * Math.PI) / 180));
+  const viewbox = `${(lng - lngDelta).toFixed(5)},${(lat + latDelta).toFixed(5)},${(lng + lngDelta).toFixed(5)},${(lat - latDelta).toFixed(5)}`;
+
+  const queryTerms: Array<{ term: string; cat: PublicFacility['category'] }> = [];
+  if (category === 'all' || category === 'hospital') queryTerms.push({ term: 'hospital', cat: 'hospital' });
+  if (category === 'all' || category === 'police') queryTerms.push({ term: 'police station', cat: 'police' });
+  if (category === 'all' || category === 'clinic') queryTerms.push({ term: 'clinic', cat: 'clinic' });
+  if (category === 'all' || category === 'pharmacy') queryTerms.push({ term: 'pharmacy', cat: 'pharmacy' });
+  if (category === 'all' || category === 'emergency') queryTerms.push({ term: 'fire station', cat: 'emergency' });
+
+  const results: PublicFacility[] = [];
+  const seen = new Set<string>();
+  let anySuccess = false;
+  let lastError = '';
+
+  await Promise.all(
+    queryTerms.map(async ({ term, cat }) => {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(term)}&viewbox=${viewbox}&bounded=1&limit=25&addressdetails=1&extratags=1`;
+        const resp = await fetch(url, {
+          headers: { 'User-Agent': 'NAGAR-AI-SmartCity/1.0' },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) {
+          lastError = `OpenStreetMap Nominatim returned HTTP ${resp.status}`;
+          return;
+        }
+        anySuccess = true;
+        const items = (await resp.json()) as NominatimPoi[];
+        for (const item of items) {
+          const fLat = Number(item.lat);
+          const fLng = Number(item.lon);
+          if (!Number.isFinite(fLat) || !Number.isFinite(fLng)) continue;
+
+          const extra = item.extratags || {};
+          const rawName = item.name || extra.name || (item.display_name ? item.display_name.split(',')[0].trim() : '');
+          if (!rawName) continue;
+
+          const dist = haversineKm(lat, lng, fLat, fLng);
+          if (dist > radiusKm) continue;
+
+          const resolvedCat: PublicFacility['category'] =
+            item.type === 'hospital'
+              ? 'hospital'
+              : item.type === 'police'
+                ? 'police'
+                : item.type === 'clinic' || item.type === 'doctors'
+                  ? 'clinic'
+                  : item.type === 'pharmacy'
+                    ? 'pharmacy'
+                    : item.type === 'fire_station'
+                      ? 'emergency'
+                      : cat;
+
+          const dedupeKey = `${resolvedCat}:${rawName.toLowerCase()}:${fLat.toFixed(4)}:${fLng.toFixed(4)}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+
+          results.push({
+            id: `osm-${item.osm_type || 'poi'}-${item.osm_id || item.place_id}`,
+            name: rawName,
+            category: resolvedCat,
+            address: item.display_name || `${fLat.toFixed(5)}, ${fLng.toFixed(5)}`,
+            phone: extra.phone || extra['contact:phone'] || extra['contact:mobile'] || '',
+            openingHours: extra.opening_hours || '',
+            emergencyTag: extra.emergency === 'yes' ? '24/7 Emergency' : '',
+            lat: fLat,
+            lng: fLng,
+            distanceKm: dist,
+            source: 'OpenStreetMap Nominatim',
+          });
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : 'Nominatim lookup timed out';
+      }
+    })
+  );
+
+  results.sort((a, b) => a.distanceKm - b.distanceKm);
+  return {
+    facilities: results,
+    error: anySuccess ? undefined : lastError || 'Unable to query OpenStreetMap places.',
+  };
 }
 
 export async function fetchNearbyFacilities(params: {
@@ -125,81 +230,82 @@ export async function fetchNearbyFacilities(params: {
     }
   }
 
+  // Primary reliable OSM search via Nominatim bounded viewbox (~0.5-1.5s), with short Overpass check in parallel for extra detail if fast
+  const nominatimPromise = fetchViaNominatimViewbox(params.lat, params.lng, radiusKm, category);
   const radiusMeters = Math.round(radiusKm * 1000);
   const overpassQuery = buildOverpassQuery(params.lat, params.lng, radiusMeters, category);
 
-  let rawData: OverpassResponse | null = null;
-  let lastError = 'Unable to reach OpenStreetMap Overpass API.';
-
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'User-Agent': 'NAGAR-AI-SmartCity/1.0',
-        },
-        body: `data=${encodeURIComponent(overpassQuery)}`,
-        signal: AbortSignal.timeout(12_000),
-      });
-      if (!resp.ok) {
-        lastError = `Places provider returned HTTP ${resp.status}.`;
-        continue;
+  const overpassPromise = (async (): Promise<PublicFacility[]> => {
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': 'NAGAR-AI-SmartCity/1.0',
+          },
+          body: `data=${encodeURIComponent(overpassQuery)}`,
+          signal: AbortSignal.timeout(3500),
+        });
+        if (!resp.ok) continue;
+        const rawData = (await resp.json()) as OverpassResponse;
+        if (!Array.isArray(rawData.elements)) continue;
+        const list: PublicFacility[] = [];
+        for (const el of rawData.elements) {
+          const tags = el.tags || {};
+          const fLat = el.lat ?? el.center?.lat;
+          const fLng = el.lon ?? el.center?.lon;
+          if (typeof fLat !== 'number' || typeof fLng !== 'number') continue;
+          const name = tags.name || tags['name:en'] || tags['operator'] || '';
+          if (!name) continue;
+          const dist = haversineKm(params.lat, params.lng, fLat, fLng);
+          if (dist > radiusKm) continue;
+          list.push({
+            id: `osm-${el.type}-${el.id}`,
+            name,
+            category: classifyOsmElement(tags),
+            address: formatOsmAddress(tags, fLat, fLng),
+            phone: tags.phone || tags['contact:phone'] || tags['contact:mobile'] || '',
+            openingHours: tags.opening_hours || '',
+            emergencyTag: tags.emergency === 'yes' ? '24/7 Emergency' : '',
+            lat: fLat,
+            lng: fLng,
+            distanceKm: dist,
+            source: 'OpenStreetMap Overpass API',
+          });
+        }
+        return list;
+      } catch {
+        // fast fallback to Nominatim
       }
-      rawData = (await resp.json()) as OverpassResponse;
-      break;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : 'Overpass network timeout.';
+    }
+    return [];
+  })();
+
+  const [nomRes, overRes] = await Promise.all([nominatimPromise, overpassPromise]);
+
+  const mergedMap = new Map<string, PublicFacility>();
+  for (const item of [...overRes, ...nomRes.facilities]) {
+    const key = `${item.category}:${item.name.toLowerCase()}:${item.lat.toFixed(4)}:${item.lng.toFixed(4)}`;
+    const existing = mergedMap.get(key);
+    if (!existing || (!existing.phone && item.phone)) {
+      mergedMap.set(key, item);
     }
   }
 
-  if (!rawData || !Array.isArray(rawData.elements)) {
+  const parsed = Array.from(mergedMap.values()).sort((a, b) => a.distanceKm - b.distanceKm);
+  const sourceLabel = overRes.length > 0 ? 'OpenStreetMap Overpass + Nominatim' : 'OpenStreetMap Nominatim';
+
+  if (parsed.length === 0 && nomRes.error) {
     return {
       facilities: [],
       cached: false,
-      source: 'OpenStreetMap Overpass API',
+      source: sourceLabel,
       fetchedAt: now.toISOString(),
       disclaimer,
-      error: lastError,
+      error: nomRes.error,
     };
   }
-
-  const seen = new Set<string>();
-  const parsed: PublicFacility[] = [];
-
-  for (const el of rawData.elements) {
-    const tags = el.tags || {};
-    const fLat = el.lat ?? el.center?.lat;
-    const fLng = el.lon ?? el.center?.lon;
-    if (typeof fLat !== 'number' || typeof fLng !== 'number') continue;
-
-    const name = tags.name || tags['name:en'] || tags['operator'] || '';
-    if (!name) continue; // Only include verified named facilities
-
-    const cat = classifyOsmElement(tags);
-    const dedupeKey = `${cat}:${name.toLowerCase()}:${fLat.toFixed(4)}:${fLng.toFixed(4)}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
-    const dist = haversineKm(params.lat, params.lng, fLat, fLng);
-    if (dist > radiusKm) continue;
-
-    parsed.push({
-      id: `osm-${el.type}-${el.id}`,
-      name,
-      category: cat,
-      address: formatOsmAddress(tags, fLat, fLng),
-      phone: tags.phone || tags['contact:phone'] || tags['contact:mobile'] || '',
-      openingHours: tags.opening_hours || '',
-      emergencyTag: tags.emergency === 'yes' ? '24/7 Emergency' : '',
-      lat: fLat,
-      lng: fLng,
-      distanceKm: dist,
-      source: 'OpenStreetMap Overpass API',
-    });
-  }
-
-  parsed.sort((a, b) => a.distanceKm - b.distanceKm);
 
   const fetchedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
@@ -214,7 +320,7 @@ export async function fetchNearbyFacilities(params: {
     radiusKm,
     category,
     JSON.stringify(parsed),
-    'OpenStreetMap Overpass API',
+    sourceLabel,
     fetchedAt,
     expiresAt
   );
@@ -228,7 +334,7 @@ export async function fetchNearbyFacilities(params: {
   return {
     facilities: filtered,
     cached: false,
-    source: 'OpenStreetMap Overpass API',
+    source: sourceLabel,
     fetchedAt,
     disclaimer,
   };

@@ -15,9 +15,12 @@ import {
   Trash2,
   Bell,
   Lock,
+  ShieldCheck,
+  Plus,
 } from 'lucide-react';
 import type {
   AuthUser,
+  CaregiverRelationship,
   GeoLocationState,
   LanguageCode,
   SafetyDashboardData,
@@ -71,6 +74,14 @@ export const WomenSafetyModule: React.FC<WomenSafetyModuleProps> = ({
   const [issuedCodeInfo, setIssuedCodeInfo] = useState<{ caregiverName: string; code: string } | null>(null);
   const [issuedAccessToken, setIssuedAccessToken] = useState<{ caregiverName: string; token: string; expiresAt: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+
+  // Safe Zones / Geofencing Form
+  const [zoneName, setZoneName] = useState('');
+  const [zoneType, setZoneType] = useState<'safe_zone' | 'alert_zone'>('safe_zone');
+  const [zoneLat, setZoneLat] = useState('');
+  const [zoneLng, setZoneLng] = useState('');
+  const [zoneRadiusM, setZoneRadiusM] = useState(250);
+  const [zoneAddress, setZoneAddress] = useState('');
 
   const watchIdRef = useRef<number | null>(null);
   const lastPushRef = useRef<number>(0);
@@ -406,6 +417,86 @@ export const WomenSafetyModule: React.FC<WomenSafetyModuleProps> = ({
     setTimeout(() => setCopiedKey(false), 2500);
   };
 
+  const handleToggleCaregiverPerm = async (
+    cg: CaregiverRelationship,
+    field: 'canViewLocation' | 'canReceiveSos' | 'canViewProfile' | 'notifySms' | 'notifyWhatsapp',
+    nextVal: boolean
+  ) => {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/safety/caregivers/${cg.id}/permissions`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: nextVal }),
+      });
+      setFeedback({ type: 'ok', text: `Updated ${cg.caregiver_name}'s access permissions.` });
+      await fetchDashboard();
+    } catch (err) {
+      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Unable to update permissions.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleFillZoneFromGps = async () => {
+    const fresh = (await onRequestGps()) || geo;
+    if (fresh.lat !== null && fresh.lng !== null) {
+      setZoneLat(fresh.lat.toFixed(6));
+      setZoneLng(fresh.lng.toFixed(6));
+      setZoneAddress(fresh.address || '');
+    } else {
+      setFeedback({ type: 'err', text: 'GPS coordinates not yet acquired. Enable location or type coordinates.' });
+    }
+  };
+
+  const handleCreateSafetyZone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const latNum = zoneLat ? Number(zoneLat) : geo.lat;
+      const lngNum = zoneLng ? Number(zoneLng) : geo.lng;
+      if (latNum === null || lngNum === null || !Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+        setFeedback({ type: 'err', text: 'Use current GPS or enter valid coordinates for the zone.' });
+        return;
+      }
+      await apiFetch('/api/safety/zones', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: zoneName,
+          zoneType,
+          lat: latNum,
+          lng: lngNum,
+          radiusM: zoneRadiusM,
+          address: zoneAddress || geo.address || '',
+        }),
+      });
+      setZoneName('');
+      setZoneAddress('');
+      setFeedback({ type: 'ok', text: `Safety zone "${zoneName}" saved.` });
+      await fetchDashboard();
+    } catch (err) {
+      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Failed to save safety zone.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteSafetyZone = async (id: string) => {
+    await apiFetch(`/api/safety/zones/${id}`, { method: 'DELETE' });
+    await fetchDashboard();
+  };
+
+  const calcDistanceMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371000;
+    const toRad = (v: number) => (v * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  };
+
   const activeSos = data?.sosIncidents.find((s) => s.status === 'active') || null;
 
   return (
@@ -649,10 +740,8 @@ export const WomenSafetyModule: React.FC<WomenSafetyModuleProps> = ({
           </div>
           {data?.messagingProvider && (
             <div className="text-[11px] font-mono text-slate-500">
-              SMS: {data.messagingProvider.twilioSmsConfigured ? 'Configured' : 'Not Configured'} · WhatsApp:{' '}
-              {data.messagingProvider.twilioWhatsappConfigured || data.messagingProvider.metaWhatsappConfigured
-                ? 'Configured'
-                : 'Not Configured'}
+              SMS ({data.messagingProvider.providerName}): {data.messagingProvider.smsConfigured ? 'Configured' : 'Not Configured'} · WhatsApp:{' '}
+              {data.messagingProvider.whatsappConfigured ? 'Configured' : 'Not Configured'}
             </div>
           )}
         </div>
@@ -745,55 +834,270 @@ export const WomenSafetyModule: React.FC<WomenSafetyModuleProps> = ({
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {data.caregivers.map((cg) => (
-              <div key={cg.id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-slate-900 dark:text-white">{cg.caregiver_name}</div>
-                  <div className="text-xs font-mono text-slate-500">
-                    {cg.caregiver_phone} · Channels: In-App{cg.notify_sms ? ', SMS' : ''}
-                    {cg.notify_whatsapp ? ', WhatsApp' : ''}
+            {data.caregivers.map((cg) => {
+              const canViewLocation = cg.can_view_location !== 0;
+              const canReceiveSos = cg.can_receive_sos !== 0;
+              const canViewProfile = cg.can_view_profile !== 0;
+              return (
+                <div key={cg.id} className="py-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900 dark:text-white">{cg.caregiver_name}</div>
+                      <div className="text-xs font-mono text-slate-500">
+                        {cg.caregiver_phone} · Channels: In-App{cg.notify_sms ? ', SMS' : ''}
+                        {cg.notify_whatsapp ? ', WhatsApp' : ''}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`text-xs font-semibold uppercase ${
+                          cg.status === 'active'
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : cg.status === 'verified_awaiting_approval'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-slate-500'
+                        }`}
+                      >
+                        {cg.status.replace(/_/g, ' ')}
+                      </span>
+
+                      <a
+                        href={`tel:${cg.caregiver_phone}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                      >
+                        <PhoneCall className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                        Call
+                      </a>
+
+                      {cg.status === 'verified_awaiting_approval' && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleApproveCaregiver(cg.id, cg.caregiver_name)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Approve &amp; Issue Token
+                        </button>
+                      )}
+
+                      {['pending_verification', 'verified_awaiting_approval', 'active'].includes(cg.status) && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleRevokeCaregiver(cg.id)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-900 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Revoke Access
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`text-xs font-semibold uppercase ${
-                      cg.status === 'active'
-                        ? 'text-emerald-700 dark:text-emerald-400'
-                        : cg.status === 'verified_awaiting_approval'
-                          ? 'text-amber-700 dark:text-amber-400'
-                          : 'text-slate-500'
-                    }`}
+                  {['verified_awaiting_approval', 'active'].includes(cg.status) && (
+                    <div className="flex flex-wrap items-center gap-4 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px]">
+                      <span className="font-semibold text-slate-500">Granular Access Permissions:</span>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={canViewLocation}
+                          disabled={busy}
+                          onChange={(e) => handleToggleCaregiverPerm(cg, 'canViewLocation', e.target.checked)}
+                          className="accent-emerald-700"
+                        />
+                        <span>Live GPS Location</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={canReceiveSos}
+                          disabled={busy}
+                          onChange={(e) => handleToggleCaregiverPerm(cg, 'canReceiveSos', e.target.checked)}
+                          className="accent-emerald-700"
+                        />
+                        <span>Receive SOS Alerts</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={canViewProfile}
+                          disabled={busy}
+                          onChange={(e) => handleToggleCaregiverPerm(cg, 'canViewProfile', e.target.checked)}
+                          className="accent-emerald-700"
+                        />
+                        <span>View Medical Profile</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(cg.notify_sms)}
+                          disabled={busy}
+                          onChange={(e) => handleToggleCaregiverPerm(cg, 'notifySms', e.target.checked)}
+                          className="accent-emerald-700"
+                        />
+                        <span>SMS</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(cg.notify_whatsapp)}
+                          disabled={busy}
+                          onChange={(e) => handleToggleCaregiverPerm(cg, 'notifyWhatsapp', e.target.checked)}
+                          className="accent-emerald-700"
+                        />
+                        <span>WhatsApp</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Safe Zones / Geofencing Manager */}
+      <div className="bg-white dark:bg-[#111916] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-base font-display font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+              Safe Zones &amp; Geofencing Watchpoints
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Define trusted Safe Zones (home, campus, office) or Alert Zones with custom radius and live GPS proximity status.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleFillZoneFromGps}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+          >
+            <Crosshair className="w-3.5 h-3.5" />
+            Use Current GPS
+          </button>
+        </div>
+
+        <form onSubmit={handleCreateSafetyZone} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+          <div className="sm:col-span-3">
+            <label className="block text-[11px] text-slate-500 mb-1">Zone Label</label>
+            <input
+              type="text"
+              required
+              value={zoneName}
+              onChange={(e) => setZoneName(e.target.value)}
+              placeholder="e.g. Home / Metro Gate"
+              className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-[11px] text-slate-500 mb-1">Zone Type</label>
+            <select
+              value={zoneType}
+              onChange={(e) => setZoneType(e.target.value as 'safe_zone' | 'alert_zone')}
+              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            >
+              <option value="safe_zone">Safe Zone</option>
+              <option value="alert_zone">Alert Zone</option>
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-[11px] text-slate-500 mb-1">Latitude</label>
+            <input
+              type="number"
+              step="any"
+              value={zoneLat}
+              onChange={(e) => setZoneLat(e.target.value)}
+              placeholder={geo.lat !== null ? geo.lat.toFixed(4) : 'Lat'}
+              className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-[11px] text-slate-500 mb-1">Longitude</label>
+            <input
+              type="number"
+              step="any"
+              value={zoneLng}
+              onChange={(e) => setZoneLng(e.target.value)}
+              placeholder={geo.lng !== null ? geo.lng.toFixed(4) : 'Lng'}
+              className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </div>
+          <div className="sm:col-span-1">
+            <label className="block text-[11px] text-slate-500 mb-1">Radius (m)</label>
+            <input
+              type="number"
+              min={50}
+              max={5000}
+              value={zoneRadiusM}
+              onChange={(e) => setZoneRadiusM(Number(e.target.value))}
+              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full inline-flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Save Zone
+            </button>
+          </div>
+        </form>
+
+        {!data?.zones || data.zones.length === 0 ? (
+          <p className="text-xs text-slate-500">No safe zones saved yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {data.zones.map((z) => {
+              const distM =
+                geo.lat !== null && geo.lng !== null ? calcDistanceMeters(geo.lat, geo.lng, z.lat, z.lng) : null;
+              const inside = distM !== null && distM <= z.radius_m;
+              return (
+                <div
+                  key={z.id}
+                  className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                      <span>{z.name}</span>
+                      <span
+                        className={`font-mono text-[10px] uppercase ${
+                          z.zone_type === 'alert_zone'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-emerald-700 dark:text-emerald-400'
+                        }`}
+                      >
+                        {z.zone_type.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <div className="font-mono text-[11px] text-slate-500">
+                      {z.lat.toFixed(5)}, {z.lng.toFixed(5)} · Radius {z.radius_m}m
+                    </div>
+                    {distM !== null && (
+                      <div
+                        className={`font-mono text-[11px] font-semibold ${
+                          inside ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500'
+                        }`}
+                      >
+                        {inside ? `INSIDE ZONE (${distM}m from center)` : `${distM}m away`}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSafetyZone(z.id)}
+                    aria-label="Delete zone"
+                    className="p-1.5 text-slate-400 hover:text-red-600 cursor-pointer"
                   >
-                    {cg.status.replace(/_/g, ' ')}
-                  </span>
-
-                  {cg.status === 'verified_awaiting_approval' && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleApproveCaregiver(cg.id, cg.caregiver_name)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Approve &amp; Issue Token
-                    </button>
-                  )}
-
-                  {['pending_verification', 'verified_awaiting_approval', 'active'].includes(cg.status) && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleRevokeCaregiver(cg.id)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-900 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
-                    >
-                      <XCircle className="w-3.5 h-3.5" />
-                      Revoke Access
-                    </button>
-                  )}
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

@@ -357,6 +357,76 @@ export function initDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS authority_grievances (
+      id TEXT PRIMARY KEY,
+      grievance_code TEXT UNIQUE NOT NULL,
+      citizen_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      related_report_code TEXT DEFAULT '',
+      target_department_id TEXT DEFAULT '',
+      target_officer_name TEXT DEFAULT '',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      evidence_urls_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL CHECK(status IN ('Submitted', 'Under Review', 'Investigating', 'Resolved', 'Dismissed')),
+      assigned_admin_id TEXT DEFAULT '',
+      resolution_notes TEXT DEFAULT '',
+      resolution_evidence_urls_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT DEFAULT '',
+      FOREIGN KEY(citizen_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS medical_requests (
+      id TEXT PRIMARY KEY,
+      request_code TEXT UNIQUE NOT NULL,
+      citizen_id TEXT NOT NULL,
+      request_type TEXT NOT NULL,
+      urgency TEXT NOT NULL CHECK(urgency IN ('normal', 'urgent', 'critical')),
+      description TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      accuracy_m REAL,
+      address TEXT NOT NULL,
+      selected_facility_name TEXT DEFAULT '',
+      selected_facility_phone TEXT DEFAULT '',
+      selected_facility_address TEXT DEFAULT '',
+      status TEXT NOT NULL CHECK(status IN ('Submitted', 'Acknowledged', 'Dispatched', 'Coordinated', 'Resolved', 'Cancelled')),
+      assigned_officer_id TEXT DEFAULT '',
+      assigned_officer_name TEXT DEFAULT '',
+      responder_notes TEXT DEFAULT '',
+      linked_sos_id TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT DEFAULT '',
+      FOREIGN KEY(citizen_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS safety_zones (
+      id TEXT PRIMARY KEY,
+      citizen_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      zone_type TEXT NOT NULL CHECK(zone_type IN ('safe_zone', 'alert_zone')),
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      radius_m INTEGER NOT NULL DEFAULT 250,
+      address TEXT DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(citizen_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sla_rules (
+      id TEXT PRIMARY KEY,
+      category TEXT UNIQUE NOT NULL,
+      department_id TEXT NOT NULL,
+      sla_hours INTEGER NOT NULL DEFAULT 48,
+      escalation_hours INTEGER NOT NULL DEFAULT 24,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(department_id) REFERENCES departments(id)
+    );
+
     CREATE TABLE IF NOT EXISTS ai_activity (
       id TEXT PRIMARY KEY,
       module TEXT NOT NULL,
@@ -381,15 +451,46 @@ export function initDatabase() {
     );
   `);
 
+  const addColumnIfMissing = (table: string, column: string, definition: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
+
   // Safe schema migrations for existing SQLite databases created prior to upgrade
+  addColumnIfMissing('users', 'recovery_key_hash', `TEXT DEFAULT ''`);
+  addColumnIfMissing('users', 'department_id', `TEXT DEFAULT ''`);
+  addColumnIfMissing('users', 'auth_provider', `TEXT DEFAULT 'local'`);
+  addColumnIfMissing('users', 'google_sub', `TEXT DEFAULT ''`);
+  addColumnIfMissing('users', 'avatar_url', `TEXT DEFAULT ''`);
+  addColumnIfMissing('users', 'last_login_at', `TEXT DEFAULT ''`);
+
+  addColumnIfMissing('officers', 'status', `TEXT DEFAULT 'active'`);
+  addColumnIfMissing('officers', 'email', `TEXT DEFAULT ''`);
+  addColumnIfMissing('officers', 'phone', `TEXT DEFAULT ''`);
+
+  addColumnIfMissing('departments', 'is_active', `INTEGER DEFAULT 1`);
+
+  addColumnIfMissing('civic_reports', 'is_emergency', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('civic_reports', 'before_photo_urls_json', `TEXT DEFAULT '[]'`);
+  addColumnIfMissing('civic_reports', 'resolution_notes', `TEXT DEFAULT ''`);
+  addColumnIfMissing('civic_reports', 'resolved_at', `TEXT DEFAULT ''`);
+  addColumnIfMissing('civic_reports', 'escalated_at', `TEXT DEFAULT ''`);
+  addColumnIfMissing('civic_reports', 'citizen_rating', `INTEGER DEFAULT 0`);
+
+  addColumnIfMissing('sos_incidents', 'acknowledged_by', `TEXT DEFAULT ''`);
+  addColumnIfMissing('sos_incidents', 'assigned_officer_id', `TEXT DEFAULT ''`);
+  addColumnIfMissing('sos_incidents', 'assigned_officer_name', `TEXT DEFAULT ''`);
+  addColumnIfMissing('sos_incidents', 'response_notes', `TEXT DEFAULT ''`);
+
+  addColumnIfMissing('caregiver_relationships', 'can_view_location', `INTEGER DEFAULT 1`);
+  addColumnIfMissing('caregiver_relationships', 'can_receive_sos', `INTEGER DEFAULT 1`);
+  addColumnIfMissing('caregiver_relationships', 'can_view_profile', `INTEGER DEFAULT 1`);
+  addColumnIfMissing('caregiver_relationships', 'verified_at', `TEXT DEFAULT ''`);
+
   const userCols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>;
   const userColNames = new Set(userCols.map((c) => c.name));
-  if (!userColNames.has('recovery_key_hash')) {
-    db.exec(`ALTER TABLE users ADD COLUMN recovery_key_hash TEXT DEFAULT ''`);
-  }
-  if (!userColNames.has('department_id')) {
-    db.exec(`ALTER TABLE users ADD COLUMN department_id TEXT DEFAULT ''`);
-  }
 
   // Purge any legacy demo records from prior builds so zero dummy data remains
   if (userColNames.has('is_demo')) {
@@ -433,13 +534,17 @@ export function initDatabase() {
           accessibility_json TEXT NOT NULL DEFAULT '{}',
           notification_prefs_json TEXT NOT NULL DEFAULT '{}',
           account_status TEXT NOT NULL DEFAULT 'active',
+          auth_provider TEXT DEFAULT 'local',
+          google_sub TEXT DEFAULT '',
+          avatar_url TEXT DEFAULT '',
+          last_login_at TEXT DEFAULT '',
           created_at TEXT NOT NULL
         );
 
         INSERT INTO users_new (
           id, name, email, phone, password_hash, recovery_key_hash, role, department_id,
           preferred_language, voice_settings_json, accessibility_json, notification_prefs_json,
-          account_status, created_at
+          account_status, auth_provider, google_sub, avatar_url, last_login_at, created_at
         )
         SELECT
           id, name, email, COALESCE(phone, ''), password_hash, COALESCE(recovery_key_hash, ''),
@@ -449,6 +554,10 @@ export function initDatabase() {
           COALESCE(accessibility_json, '{}'),
           COALESCE(notification_prefs_json, '{}'),
           COALESCE(account_status, 'active'),
+          COALESCE(auth_provider, 'local'),
+          COALESCE(google_sub, ''),
+          COALESCE(avatar_url, ''),
+          COALESCE(last_login_at, ''),
           created_at
         FROM users;
 
@@ -505,20 +614,46 @@ export function initDatabase() {
     db.pragma('foreign_keys = ON');
   }
 
-  const reportCols = db.prepare(`PRAGMA table_info(civic_reports)`).all() as Array<{ name: string }>;
-  const reportColNames = new Set(reportCols.map((c) => c.name));
-  if (!reportColNames.has('is_emergency')) {
-    db.exec(`ALTER TABLE civic_reports ADD COLUMN is_emergency INTEGER NOT NULL DEFAULT 0`);
-  }
-
   // Ensure standard municipal department definitions exist (structural taxonomy only, zero fake reports/users)
   const deptCount = db.prepare(`SELECT COUNT(*) as c FROM departments`).get() as { c: number };
   if (deptCount.c === 0) {
-    const insertDept = db.prepare(`INSERT INTO departments (id, name, code, sla_hours, head_name) VALUES (?, ?, ?, ?, ?)`);
+    const insertDept = db.prepare(`INSERT INTO departments (id, name, code, sla_hours, head_name, is_active) VALUES (?, ?, ?, ?, ?, 1)`);
     insertDept.run('dept-roads', 'Public Works & Roads', 'PWD-RD', 48, 'Department Head');
     insertDept.run('dept-sanitation', 'Solid Waste & Sanitation', 'SWM-01', 24, 'Department Head');
     insertDept.run('dept-lighting', 'Street Lighting & Electrical', 'ELEC-SL', 36, 'Department Head');
     insertDept.run('dept-water', 'Water Supply & Drainage', 'DJB-WD', 24, 'Department Head');
     insertDept.run('dept-mobility', 'Urban Transport Cell', 'UTC-TR', 48, 'Department Head');
   }
+
+  // Ensure structural SLA rules exist for Seva AI civic categories (NO Animal Rescue or Road Accidents)
+  const slaCount = db.prepare(`SELECT COUNT(*) as c FROM sla_rules`).get() as { c: number };
+  if (slaCount.c === 0) {
+    const nowIso = new Date().toISOString();
+    const insertSla = db.prepare(`INSERT INTO sla_rules (id, category, department_id, sla_hours, escalation_hours, updated_at) VALUES (?, ?, ?, ?, ?, ?)`);
+    insertSla.run('sla-roads', 'Potholes and damaged roads', 'dept-roads', 48, 24, nowIso);
+    insertSla.run('sla-waste', 'Garbage and waste management', 'dept-sanitation', 24, 12, nowIso);
+    insertSla.run('sla-drains', 'Blocked drains and waterlogging', 'dept-water', 24, 12, nowIso);
+    insertSla.run('sla-traffic', 'Traffic problems and road obstructions', 'dept-mobility', 36, 18, nowIso);
+    insertSla.run('sla-lighting', 'Street lighting and electrical faults', 'dept-lighting', 36, 18, nowIso);
+    insertSla.run('sla-other', 'Other civic infrastructure problems', 'dept-roads', 48, 24, nowIso);
+  }
+
+  // Ensure default structural app_config entries exist
+  const ensureCfg = (key: string, value: unknown) => {
+    const existing = db.prepare(`SELECT key FROM app_config WHERE key = ?`).get(key);
+    if (!existing) {
+      db.prepare(`INSERT INTO app_config (key, value) VALUES (?, ?)`).run(key, JSON.stringify(value));
+    }
+  };
+  ensureCfg('reward_config', {
+    verifiedReportPoints: 20,
+    resolutionConfirmedPoints: 30,
+    segregationPoints: 25,
+    maxDailyClaims: 10,
+  });
+  ensureCfg('security_settings', {
+    sessionTtlHours: 12,
+    allowCitizenGoogleSignup: true,
+    allowCaregiverGoogleSignup: true,
+  });
 }
